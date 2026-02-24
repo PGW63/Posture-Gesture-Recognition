@@ -1,0 +1,185 @@
+# Skeleton-based Action Recognition
+
+스켈레톤 기반 행동/자세 인식 프로젝트.  
+**Posture Recognition** (MLP) + **Gesture Recognition** (TCN) 두 개의 파이프라인으로 구성됩니다.
+
+rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간 추론
+
+---
+
+## 클래스 구성
+
+### Posture Recognition (MLP) — 단일 프레임
+
+| Label | 이름 | 데이터 |
+|-------|------|--------|
+| 0 | sitting | POLAR dataset |
+| 1 | standing | POLAR dataset |
+| 2 | lying | POLAR dataset |
+
+### Gesture Recognition (TCN) — 시퀀스 (65-joint wholebody)
+
+| Label | 이름 | 데이터 |
+|-------|------|--------|
+| 0 | idle | 커스텀 수집 |
+| 1 | waving | 커스텀 수집 |
+| 2 | hands_up_single | 커스텀 수집 |
+| 3 | hands_up_both | 커스텀 수집 |
+| 4 | pointing | 커스텀 수집 |
+
+---
+
+## 프로젝트 구조
+
+```
+├── data/
+│   ├── dataset.py              # MLP 데이터셋 (단일 프레임, Posture)
+│   ├── ntu_dataset.py          # TCN 데이터셋 (시퀀스, Gesture)
+│   ├── collect_skeleton.py     # 이미지 → 스켈레톤 추출
+│   ├── Annotations/            # POLAR JSON 어노테이션
+│   ├── ImageSets/              # train/val split 파일
+│   ├── images/                 # 원본 이미지 (gitignore)
+│   ├── skeletons/              # 추출된 .npy (gitignore)
+│   └── dataset/                # 커스텀 비디오 클립 (gitignore)
+├── models/
+│   ├── mlp.py                  # MLP 모델 (Posture)
+│   ├── tcn.py                  # TCN 모델 (Gesture, Dilated Causal Conv)
+│   ├── best_model.pth          # 학습된 MLP (gitignore)
+│   ├── best_tcn_xsub.pth      # 학습된 TCN (gitignore)
+│   └── best_tcn_xset.pth      # 학습된 TCN (gitignore)
+├── src/
+│   ├── train.py                # MLP 학습
+│   ├── train_tcn.py            # TCN 학습
+│   ├── val.py                  # MLP 평가
+│   ├── val_tcn.py              # TCN 평가
+│   ├── inference.py            # MLP 추론 (.npy / 웹캠)
+│   ├── inference_tcn.py        # TCN 실시간 추론 (웹캠)
+│   └── collect_data.py         # 웹캠 데이터 수집 도구
+├── utils/
+│   ├── skeleton_ops.py         # 스켈레톤 joint 연산 (17/65-joint)
+│   ├── normalize_skeleton.py   # 어깨 기반 정규화
+│   └── compute_pairwise_distance.py  # Bone distance 피처
+├── extract_wholebody_skeleton.py   # 비디오 → 65-joint pkl 추출
+├── extract_ntu_subset.py           # NTU120에서 subset 추출
+├── merge_pkl.py                    # NTU + 커스텀 pkl 병합
+├── requirements.txt
+└── README.md
+```
+
+---
+
+## 환경 설정
+
+```bash
+pip install -r requirements.txt
+```
+
+[rtmlib](https://github.com/Tau-J/rtmlib)가 별도 경로에 설치되어 있어야 합니다.
+
+---
+
+## 스켈레톤 구조 (65-joint, face 제거)
+
+RTMPose Wholebody 133 keypoints에서 **face 68개를 제거**한 65-joint:
+
+| 구간 | 인덱스 | 갯수 |
+|------|--------|------|
+| Body (COCO) | 0-16 | 17 |
+| Feet | 17-22 | 6 |
+| Left Hand | 23-43 | 21 |
+| Right Hand | 44-64 | 21 |
+| **합계** | | **65** |
+
+TCN 입력: `(batch, 130, T)` — 65 joints × 2 coords, T = 시퀀스 길이
+
+---
+
+## 사용법
+
+### 1. 데이터 준비
+
+#### 커스텀 비디오 → 65-joint 스켈레톤 추출
+
+```bash
+python extract_wholebody_skeleton.py
+```
+
+`data/dataset/` 아래의 비디오에서 65-joint 스켈레톤을 추출하여 `wholebody_5class.pkl` 생성.
+
+#### NTU-120 subset 추출 (선택)
+
+```bash
+python extract_ntu_subset.py --src /path/to/ntu120_2d.pkl
+python merge_pkl.py --ntu ntu_5class.pkl --custom wholebody_5class.pkl
+```
+
+### 2. 학습
+
+#### TCN (Gesture, 5-class)
+
+```bash
+python src/train_tcn.py --pkl wholebody_5class.pkl --split xsub --epochs 100
+```
+
+| 옵션 | 기본값 | 설명 |
+|------|--------|------|
+| `--pkl` | `merged_5class.pkl` | 학습 데이터 pkl |
+| `--split` | `xsub` | 분할 (xsub / xset) |
+| `--epochs` | 100 | 학습 에폭 |
+| `--batch_size` | 32 | 배치 크기 |
+| `--lr` | 1e-3 | 학습률 |
+| `--patience` | 15 | Early stopping |
+| `--max_frames` | 120 | 최대 시퀀스 길이 |
+
+#### MLP (Posture, 3-class)
+
+```bash
+python src/train.py
+```
+
+### 3. 평가
+
+```bash
+python src/val_tcn.py --pkl wholebody_5class.pkl --split xsub_val
+python src/val.py
+```
+
+### 4. 실시간 추론
+
+#### Gesture (TCN) — 웹캠
+
+```bash
+python src/inference_tcn.py
+python src/inference_tcn.py --source video.mp4
+python src/inference_tcn.py --source image.jpg
+```
+
+| 키 | 동작 |
+|----|------|
+| q | 종료 |
+| r | 버퍼 초기화 |
+
+#### Posture (MLP) — 웹캠
+
+```bash
+python src/inference.py --webcam
+python src/inference.py --webcam --source video.mp4
+python src/inference.py skeleton.npy    # .npy 파일 추론
+```
+
+---
+
+## 모델 아키텍처
+
+### TCN (Temporal Convolutional Network)
+- Dilated causal convolution (dilation: 1→2→4→8)
+- Residual connections + BatchNorm + Dropout
+- Masked global average pooling → FC classifier
+- 입력: `(B, 130, T)` — 65 joints × 2
+
+### MLP
+- 3-layer FC (256→128→3)
+- 입력: 50-dim (17 joints × 2 + 16 bone distances)
+
+### 정규화
+- 어깨 중점 이동 → 어깨 거리 스케일링 → low confidence zeroing
