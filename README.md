@@ -172,7 +172,7 @@ python src/inference.py skeleton.npy    # .npy 파일 추론
 ### DataSet
 |data structure| 링크|
 |---|---|
-|Only Skeleton||[Skeleton Download Link](https://drive.google.com/file/d/1b7dn6unjZZlvGphD1HsmhofyoLXEiqyp/view?usp=sharing)]
+|Only Skeleton|[Skeleton Download Link](https://drive.google.com/file/d/1b7dn6unjZZlvGphD1HsmhofyoLXEiqyp/view?usp=sharing)]
 |All Video|[Video Download link](https://drive.google.com/file/d/1b7dn6unjZZlvGphD1HsmhofyoLXEiqyp/view?usp=sharing)|
 
 ### Pretrained model
