@@ -24,7 +24,7 @@ from models.tcn import TCN
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate TCN on NTU skeleton data")
-    parser.add_argument("--pkl", type=str, default="merged_5class.pkl")
+    parser.add_argument("--pkl", type=str, default="wholebody_5class.pkl")
     parser.add_argument("--split", type=str, default="xsub_val",
                         choices=["xsub_train", "xsub_val", "xview_train", "xview_val",
                                  "xset_train", "xset_val"])

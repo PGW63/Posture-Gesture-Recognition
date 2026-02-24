@@ -30,8 +30,8 @@ from models.tcn import TCN
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train TCN on NTU skeleton data")
-    parser.add_argument("--pkl", type=str, default="merged_5class.pkl",
-                        help="Path to merged 5-class pkl file")
+    parser.add_argument("--pkl", type=str, default="wholebody_5class.pkl",
+                        help="Path to wholebody 5-class pkl file")
     parser.add_argument("--split", type=str, default="xsub",
                         choices=["xsub", "xview", "xset"],
                         help="Split protocol: xsub (cross-subject), xview (cross-view, NTU-60), xset (cross-setup, NTU-120)")
