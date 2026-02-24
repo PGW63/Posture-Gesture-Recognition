@@ -45,8 +45,8 @@ rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간
 │   ├── mlp.py                  # MLP 모델 (Posture)
 │   ├── tcn.py                  # TCN 모델 (Gesture, Dilated Causal Conv)
 │   ├── best_model.pth          # 학습된 MLP (gitignore)
-│   ├── best_tcn_xsub.pth      # 학습된 TCN (gitignore)
-│   └── best_tcn_xset.pth      # 학습된 TCN (gitignore)
+│   ├── best_tcn_xsub.pth       # 학습된 TCN (gitignore)
+│   └── best_tcn_xset.pth       # 학습된 TCN (gitignore)
 ├── src/
 │   ├── train.py                # MLP 학습
 │   ├── train_tcn.py            # TCN 학습
@@ -166,6 +166,21 @@ python src/inference.py --webcam
 python src/inference.py --webcam --source video.mp4
 python src/inference.py skeleton.npy    # .npy 파일 추론
 ```
+
+## 제공해주는 데이터셋 및 모델
+
+### DataSet
+|data structure| 링크|
+|---|---|
+|Only Skeleton||[Skeleton Download Link](https://drive.google.com/file/d/1b7dn6unjZZlvGphD1HsmhofyoLXEiqyp/view?usp=sharing)]
+|All Video|[Video Download link](https://drive.google.com/file/d/1b7dn6unjZZlvGphD1HsmhofyoLXEiqyp/view?usp=sharing)|
+
+### Pretrained model
+
+| model | 링크 |
+|----|----|
+|MLP|[MLP Download Link](https://drive.google.com/file/d/1Prnip7Zo3Brh01LBdNcXS_PHi1OCp3Gt/view?usp=drive_link)|
+|TCN|[TCN Download Link](https://drive.google.com/file/d/1mNUcOMt5AlNlY6JNDcyVvuuUfQ97LW7E/view?usp=drive_link)|
 
 ---
 
