@@ -29,6 +29,9 @@ custom_data/
 Thumbs.db
 *.png
 *.jpg
+*.gif
+!assets/
+!assets/**
 
 # ===== ROS =====
 .COLCON_IGNORE
