@@ -7,17 +7,17 @@ rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간
 
 <table>
   <tr>
-    <td align="center"><img src="assets/idle.png" width="300"/><br/><b>Idle</b></td>
-    <td align="center"><img src="assets/pointing.png" width="300"/><br/><b>Pointing</b></td>
+    <td width="50%" align="center"><img src="assets/idle.png" width="100%"/><br/><b>Idle</b></td>
+    <td width="50%" align="center"><img src="assets/pointing.png" width="100%"/><br/><b>Pointing</b></td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/handup_single.png" width="300"/><br/><b>Hand Up (Single)</b></td>
-    <td align="center"><img src="assets/handup_both.png" width="300"/><br/><b>Hand Up (Both)</b></td>
+    <td width="50%" align="center"><img src="assets/handup_single.png" width="100%"/><br/><b>Hand Up (Single)</b></td>
+    <td width="50%" align="center"><img src="assets/handup_both.png" width="100%"/><br/><b>Hand Up (Both)</b></td>
   </tr>
 </table>
 
 <p align="center">
-  <img src="assets/waving.gif" width="400"/><br/>
+  <img src="assets/waving.gif" width="50%"/><br/>
   <b>Waving</b>
 </p>
 
