@@ -5,6 +5,22 @@
 
 rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간 추론
 
+<table>
+  <tr>
+    <td align="center"><img src="assets/idle.png" width="300"/><br/><b>Idle</b></td>
+    <td align="center"><img src="assets/pointing.png" width="300"/><br/><b>Pointing</b></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/handup_single.png" width="300"/><br/><b>Hand Up (Single)</b></td>
+    <td align="center"><img src="assets/handup_both.png" width="300"/><br/><b>Hand Up (Both)</b></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="assets/waving.gif" width="400"/><br/>
+  <b>Waving</b>
+</p>
+
 ---
 
 ## 클래스 구성
@@ -198,3 +214,26 @@ python src/inference.py skeleton.npy    # .npy 파일 추론
 
 ### 정규화
 - 어깨 중점 이동 → 어깨 거리 스케일링 → low confidence zeroing
+
+## 학습 결과
+
+### Posture MLP
+||precision|recall|F1 score|
+|---|---|---|---|
+|standing|0.9532|0.9082|0.9302|
+|sitting|0.8383|0.8879|0.8624|
+|lying|0.7382|0.8446|0.7848|
+
+### Gesture TCN
+||precision|recall|F1 score|
+|---|---|---|---|
+|idle|1.0|1.0|1.0|
+|waving|1.0|0.9667|0.9831|
+|handup_single|0.9661|0.9500|0.9580|
+|handup_both|0.9836|1.0|0.9917|
+|pointing|0.9677|1.0|0.9836|
+
+
+
+## TODO
+위의 추론 영상과 같이 가까운 시점과 7~8m 넘어가는 지점부터의 데이터셋이 없기에 새로 따서 새로이 학습할 예정
