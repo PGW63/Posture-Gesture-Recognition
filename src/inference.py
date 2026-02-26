@@ -37,7 +37,7 @@ from utils.skeleton_ops import keep_body_only
 from utils.compute_pairwise_distance import extract_feature_from_xy
 from models.mlp import MLP
 from data.dataset import NUM_CLASSES, IDX_TO_CLASS, _process_skeleton
-from track_state import TrackState, TrackManager, match_centers_to_tracks
+from utils.track_state import TrackState, TrackManager, match_centers_to_tracks
 
 
 INPUT_DIM = 50

@@ -35,7 +35,7 @@ import numpy as np
 
 from models.tcn import TCN
 from data.ntu_dataset import NTU_ACTION_NAMES
-from track_state import TrackState, TrackManager, match_centers_to_tracks
+from utils.track_state import TrackState, TrackManager, match_centers_to_tracks
 
 
 # ===== 클래스별 표시 색상 (BGR) =====
