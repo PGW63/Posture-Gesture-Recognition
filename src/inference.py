@@ -37,6 +37,7 @@ from utils.skeleton_ops import keep_body_only
 from utils.compute_pairwise_distance import extract_feature_from_xy
 from models.mlp import MLP
 from data.dataset import NUM_CLASSES, IDX_TO_CLASS, _process_skeleton
+from track_state import TrackState, TrackManager, match_centers_to_tracks
 
 
 INPUT_DIM = 50
@@ -218,7 +219,7 @@ def predict_frames(model, keypoints, scores, device, max_persons=8):
     return results
 
 
-def draw_label(frame, position, class_name, confidence, prefix=None):
+def draw_label(frame, position, class_name, confidence, prefix=None, extra_text=None):
     color = CLASS_COLORS.get(class_name, (255, 255, 255))
     base = f"{class_name} {confidence:.0%}"
     label = f"{prefix} {base}" if prefix else base
@@ -229,6 +230,9 @@ def draw_label(frame, position, class_name, confidence, prefix=None):
                   (cx + tw // 2 + 5, cy + 5), color, -1)
     cv2.putText(frame, label, (cx - tw // 2, cy),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+    if extra_text:
+        cv2.putText(frame, extra_text, (cx - tw // 2, cy + 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1)
 
 
 def draw_hud(frame, fps, pose_ms, mlp_ms, probs_dict=None):
@@ -331,10 +335,13 @@ def run_webcam(model, device, args):
     current_probs = {}
     mlp_ms = 0.0
     frame_count = 0
+    next_tid = 0
     fps_list = []
     fail_count = 0
+    tracks = TrackManager()
+    ttl_frames = max(1, int(args.track_ttl))
 
-    print(f"\nStarted! Press 'q' to quit.\n")
+    print(f"\nStarted! Press 'q' to quit, 'i' to print track states.\n")
 
     while cap.isOpened():
         success, frame = cap.read()
@@ -355,9 +362,20 @@ def run_webcam(model, device, args):
 
         img_show = frame.copy()
 
+        visible_tids = set()
         if keypoints is not None and scores is not None and len(keypoints) > 0:
             img_show = draw_skeleton(img_show, keypoints, scores,
                                      openpose_skeleton=False, kpt_thr=args.kpt_thr)
+
+            # Local track association
+            n_det = min(len(keypoints), len(scores), args.max_persons_infer)
+            det_centers = []
+            for det_idx in range(n_det):
+                center = (keypoints[det_idx][LEFT_SHOULDER] + keypoints[det_idx][RIGHT_SHOULDER]) / 2.0
+                det_centers.append((float(center[0]), float(center[1])))
+            det_to_tid, next_tid = match_centers_to_tracks(
+                det_centers, tracks, frame_count, ttl_frames, args.track_match_dist, next_tid
+            )
 
             # MLP inference for multiple persons (batched)
             t_mlp_start = time.time()
@@ -369,13 +387,44 @@ def run_webcam(model, device, args):
             # Draw labels for each inferred person
             for r in results:
                 pidx = r["person_idx"]
+                if pidx >= len(det_to_tid):
+                    continue
+                tid = int(det_to_tid[pidx])
+                visible_tids.add(tid)
+                if tid not in tracks:
+                    tracks[tid] = TrackState(buf_size=1)
+                tracks[tid].pred_cls = r["class"]
+                tracks[tid].pred_conf = r["confidence"]
+                tracks[tid].pred_probs = r["probabilities"]
+                tracks[tid].last_seen_frame = frame_count
                 center = (keypoints[pidx][LEFT_SHOULDER] + keypoints[pidx][RIGHT_SHOULDER]) / 2.0
+                tracks[tid].last_center = (float(center[0]), float(center[1]))
+                tracks[tid].missing_frames = 0
+                kp_px = keypoints[pidx][:17]
+                x_min, x_max = kp_px[:, 0].min(), kp_px[:, 0].max()
+                y_min, y_max = kp_px[:, 1].min(), kp_px[:, 1].max()
+                w = float(x_max - x_min)
+                h = float(y_max - y_min)
+                tracks[tid].last_bbox = (float(x_min), float(y_min), float(x_max), float(y_max))
+                tracks[tid].bbox_wh = (w, h)
+                tracks[tid].bbox_area = w * h
+                st = tracks.get_track_state(tid)
+                if st is not None and st.get("last_center") is not None:
+                    sx, sy = st["last_center"]
+                    extra = f"xy=({sx:.1f},{sy:.1f})"
+                    cls_name = st["pred_cls"]
+                    conf = st["pred_conf"]
+                else:
+                    extra = None
+                    cls_name = r["class"]
+                    conf = r["confidence"]
                 draw_label(
                     img_show,
                     (center[0], center[1] - 60),
-                    r["class"],
-                    r["confidence"],
-                    prefix=f"P{pidx}",
+                    cls_name,
+                    conf,
+                    prefix=f"TID:{tid}",
+                    extra_text=extra,
                 )
 
             # HUD probability bars: highest-confidence visible person
@@ -384,6 +433,16 @@ def run_webcam(model, device, args):
                 current_probs = best["probabilities"]
             else:
                 current_probs = {}
+        else:
+            mlp_ms = 0.0
+
+        # Update missing counters and cleanup stale tracks
+        for tid, tr in tracks.items():
+            if tid not in visible_tids:
+                tr.missing_frames = frame_count - tr.last_seen_frame
+        dead_tids = [tid for tid, tr in tracks.items() if tr.missing_frames > ttl_frames]
+        for tid in dead_tids:
+            del tracks[tid]
 
         t_end = time.time()
 
@@ -401,6 +460,19 @@ def run_webcam(model, device, args):
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+        elif key == ord('i'):
+            all_states = tracks.get_all_states()
+            if not all_states:
+                print("[Tracks] none")
+            else:
+                print("[Tracks]")
+                for tid, st in sorted(all_states.items(), key=lambda x: x[0]):
+                    center = st["last_center"]
+                    center_str = "None" if center is None else f"({center[0]:.1f},{center[1]:.1f})"
+                    print(
+                        f"  tid={tid} cls={st['pred_cls']} conf={st['pred_conf']:.2f} "
+                        f"miss={st['missing_frames']} center={center_str}"
+                    )
 
     cap.release()
     cv2.destroyAllWindows()
@@ -436,6 +508,10 @@ def main():
                         help="Max persons to run posture inference on per frame")
     parser.add_argument("--det_frequency", type=int, default=1,
                         help="Pose detector frequency for tracker (lower is more stable)")
+    parser.add_argument("--track_match_dist", type=float, default=120.0,
+                        help="Pixel distance threshold for local track matching")
+    parser.add_argument("--track_ttl", type=int, default=20,
+                        help="Drop track if not seen for N frames")
 
     args = parser.parse_args()
 

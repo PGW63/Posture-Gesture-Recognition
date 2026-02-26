@@ -35,6 +35,7 @@ import numpy as np
 
 from models.tcn import TCN
 from data.ntu_dataset import NTU_ACTION_NAMES
+from track_state import TrackState, TrackManager, match_centers_to_tracks
 
 
 # ===== 클래스별 표시 색상 (BGR) =====
@@ -46,21 +47,6 @@ CLASS_COLORS = {
     "pointing":         (0, 255, 0),      # green
     "unknown":          (80, 80, 80),     # dark gray
 }
-
-
-# ===== Track state 관리 =====
-class TrackState:
-    """각 track_id별 상태를 관리하는 클래스"""
-    def __init__(self, buf_size=60):
-        self.buffer = deque(maxlen=buf_size)  # normalized keypoint frames
-        self.pred_cls = "unknown"
-        self.pred_conf = 0.0
-        self.pred_probs = {}
-        self.last_seen_frame = 0
-        self.last_center = None
-        self.missing_frames = 0
-        self.last_depth_z = None
-        self.bbox_area = 0  # for priority in hands_up selection
 
 
 def parse_args():
@@ -411,7 +397,7 @@ def predict_tcn_batch(model, track_items, max_frames, num_classes, device, num_j
 #  Drawing
 # ─────────────────────────────────────────────
 
-def draw_label(frame, position, class_name, confidence, buf_len, buf_max, prefix=None):
+def draw_label(frame, position, class_name, confidence, buf_len, buf_max, prefix=None, extra_text=None):
     color = CLASS_COLORS.get(class_name, (255, 255, 255))
     base = f"{class_name} {confidence:.0%}"
     label = f"{prefix} {base}" if prefix else base
@@ -428,6 +414,9 @@ def draw_label(frame, position, class_name, confidence, buf_len, buf_max, prefix
     bar_text = f"buf: {buf_len}/{buf_max}"
     cv2.putText(frame, bar_text, (cx - tw // 2, cy + 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+    if extra_text:
+        cv2.putText(frame, extra_text, (cx - tw // 2, cy + 44),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
 
 def draw_hud(frame, fps, pose_ms, tcn_ms, buf_len, buf_max, probs_dict=None):
@@ -452,50 +441,6 @@ def draw_hud(frame, fps, pose_ms, tcn_ms, buf_len, buf_max, probs_dict=None):
             # Label
             cv2.putText(frame, f"{cls_name[:12]:12s} {prob:.0%}", (10 + bar_w + 5, y + 2),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
-
-
-def match_detections_to_tracks(det_centers, tracks, frame_count, ttl_frames, dist_thr, next_tid):
-    """
-    Greedy center-distance matching between detections and existing tracks.
-    Returns:
-        det_to_tid: list[int] length=len(det_centers)
-        next_tid: updated next_tid
-    """
-    n_det = len(det_centers)
-    det_to_tid = [-1] * n_det
-    if n_det == 0:
-        return det_to_tid, next_tid
-
-    active_tids = [
-        tid for tid, tr in tracks.items()
-        if (frame_count - tr.last_seen_frame) <= ttl_frames and tr.last_center is not None
-    ]
-    unmatched_dets = set(range(n_det))
-    unmatched_tids = set(active_tids)
-
-    while unmatched_dets and unmatched_tids:
-        best = None
-        for d in unmatched_dets:
-            cx, cy = det_centers[d]
-            for tid in unmatched_tids:
-                tx, ty = tracks[tid].last_center
-                dist = float(np.hypot(cx - tx, cy - ty))
-                if best is None or dist < best[0]:
-                    best = (dist, d, tid)
-
-        if best is None or best[0] > dist_thr:
-            break
-
-        _, d, tid = best
-        det_to_tid[d] = tid
-        unmatched_dets.remove(d)
-        unmatched_tids.remove(tid)
-
-    for d in unmatched_dets:
-        det_to_tid[d] = next_tid
-        next_tid += 1
-
-    return det_to_tid, next_tid
 
 
 # ─────────────────────────────────────────────
@@ -613,7 +558,7 @@ def main():
             cap.read()
 
     # Track-wise frame buffers and states
-    tracks = {}  # tid -> TrackState
+    tracks = TrackManager()  # tid -> TrackState
     # Current target
     active_target_tid = None
 
@@ -627,7 +572,7 @@ def main():
 
     print(f"\nStarted! Buffer size: {args.buf_size}, "
           f"Infer every: {args.infer_every} frames")
-    print("Press 'q' to quit, 'r' to reset tracks.\n")
+    print("Press 'q' to quit, 'r' to reset tracks, 'i' to print track states.\n")
 
     while cap.isOpened():
         success, frame = cap.read()
@@ -669,7 +614,7 @@ def main():
                 cy = float((kp_px[LEFT_SHOULDER][1] + kp_px[RIGHT_SHOULDER][1]) * 0.5)
                 det_centers.append((cx, cy))
 
-            det_to_tid, next_tid = match_detections_to_tracks(
+            det_to_tid, next_tid = match_centers_to_tracks(
                 det_centers, tracks, frame_count, RECONNECT_FRAMES, args.track_match_dist, next_tid
             )
 
@@ -698,7 +643,11 @@ def main():
                     kp_px = keypoints[det_idx][:17]  # 17 body joints
                     x_min, x_max = kp_px[:, 0].min(), kp_px[:, 0].max()
                     y_min, y_max = kp_px[:, 1].min(), kp_px[:, 1].max()
-                    tracks[tid].bbox_area = (x_max - x_min) * (y_max - y_min)
+                    w = float(x_max - x_min)
+                    h = float(y_max - y_min)
+                    tracks[tid].last_bbox = (float(x_min), float(y_min), float(x_max), float(y_max))
+                    tracks[tid].bbox_wh = (w, h)
+                    tracks[tid].bbox_area = w * h
 
             # ---- TCN inference (every N frames) ----
             if frame_count % args.infer_every == 0:
@@ -779,9 +728,21 @@ def main():
                     prefix = f"TID:{tid}"
                     if tid == active_target_tid:
                         prefix += " [TARGET]"
+                    st = tracks.get_track_state(tid)
+                    if st is not None and st.get("last_center") is not None:
+                        cx, cy = st["last_center"]
+                        extra = f"xy=({cx:.1f},{cy:.1f})"
+                        cls_name = st["pred_cls"]
+                        conf = st["pred_conf"]
+                        buf_len = st["buffer_len"]
+                    else:
+                        extra = None
+                        cls_name = track.pred_cls
+                        conf = track.pred_conf
+                        buf_len = len(track.buffer)
                     draw_label(
-                        img_show, label_pos, track.pred_cls, track.pred_conf,
-                        len(track.buffer), args.buf_size, prefix=prefix
+                        img_show, label_pos, cls_name, conf,
+                        buf_len, args.buf_size, prefix=prefix, extra_text=extra
                     )
 
         # ---- Clean up old tracks ----
@@ -822,6 +783,19 @@ def main():
             tracks.clear()
             active_target_tid = None
             print("[Reset] All tracks cleared.")
+        elif key == ord('i'):
+            all_states = tracks.get_all_states()
+            if not all_states:
+                print("[Tracks] none")
+            else:
+                print("[Tracks]")
+                for tid, st in sorted(all_states.items(), key=lambda x: x[0]):
+                    center = st["last_center"]
+                    center_str = "None" if center is None else f"({center[0]:.1f},{center[1]:.1f})"
+                    print(
+                        f"  tid={tid} cls={st['pred_cls']} conf={st['pred_conf']:.2f} "
+                        f"buf={st['buffer_len']} miss={st['missing_frames']} center={center_str}"
+                    )
 
     cap.release()
     cv2.destroyAllWindows()
