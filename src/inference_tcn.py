@@ -48,6 +48,19 @@ CLASS_COLORS = {
 }
 
 
+# ===== Track state 관리 =====
+class TrackState:
+    """각 track_id별 상태를 관리하는 클래스"""
+    def __init__(self, buf_size=60):
+        self.buffer = deque(maxlen=buf_size)  # normalized keypoint frames
+        self.pred_cls = "unknown"
+        self.pred_conf = 0.0
+        self.pred_probs = {}
+        self.last_seen_frame = 0
+        self.last_depth_z = None
+        self.bbox_area = 0  # for priority in hands_up selection
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Real-time TCN action recognition")
     parser.add_argument("--source", type=str, default="0",
@@ -55,7 +68,7 @@ def parse_args():
     parser.add_argument("--model", type=str, default=None,
                         help="TCN checkpoint (default: models/best_tcn_xsub.pth)")
     parser.add_argument("--rtmlib_path", type=str,
-                        default="/home/gw/robocup_ws/src/rtmlib")
+                        default="rtmlib")
     parser.add_argument("--mode", type=str, default="balanced",
                         choices=["balanced", "performance", "lightweight"])
     parser.add_argument("--device", type=str, default="cuda")
@@ -408,6 +421,7 @@ def main():
         mode=args.mode,
         backend="onnxruntime",
         device=args.device,
+        return_track_ids=True,
     )
 
     # ===== Video source =====
@@ -427,13 +441,20 @@ def main():
 
         # 이미지 → 동일 프레임을 반복하여 시퀀스 생성
         buf = deque(maxlen=args.buf_size)
-        keypoints, scores = wholebody(frame)
+        result = wholebody(frame)
+        
+        # return_track_ids=True이므로 track_ids도 받음
+        if len(result) == 3:
+            keypoints, scores, track_ids = result
+        else:
+            keypoints, scores = result
+            track_ids = []
 
         if keypoints is None or len(keypoints) == 0:
             print("No person detected.")
             return
 
-        kp_body, sc_body = extract_skeleton(keypoints, scores, num_joints=num_joints)
+        kp_body, sc_body = extract_skeleton(keypoints, scores, num_joints=num_joints, person_idx=0)
         kp_norm = normalize_frame(kp_body, sc_body)
 
         # 동일 프레임으로 버퍼 채우기
@@ -482,22 +503,22 @@ def main():
         for _ in range(5):
             cap.read()
 
-    # Per-person frame buffers (person 0 only for simplicity)
-    frame_buffer = deque(maxlen=args.buf_size)
+    # Track-wise frame buffers and states
+    tracks = {}  # tid -> TrackState
+    tid_to_detidx = {}  # tid -> detection index in current frame (for depth)
 
-    # Current prediction state
-    current_class = "unknown"
-    current_conf = 0.0
-    current_probs = {}
+    # Current target
+    active_target_tid = None
 
     frame_count = 0
     fps_list = []
     fail_count = 0
     tcn_ms = 0.0
+    TTL_FRAMES = 30  # Remove track if not seen for 30 frames
 
     print(f"\nStarted! Buffer size: {args.buf_size}, "
           f"Infer every: {args.infer_every} frames")
-    print("Press 'q' to quit, 'r' to reset buffer.\n")
+    print("Press 'q' to quit, 'r' to reset tracks.\n")
 
     while cap.isOpened():
         success, frame = cap.read()
@@ -513,36 +534,121 @@ def main():
         t_start = time.time()
 
         # ---- Pose detection ----
-        keypoints, scores = wholebody(frame)
+        result = wholebody(frame)
+        
+        # return_track_ids=True이므로 track_ids 포함
+        if len(result) == 3:
+            keypoints, scores, track_ids = result
+        else:
+            # 혹시 모를 호환성
+            keypoints, scores = result
+            track_ids = list(range(len(keypoints) if keypoints is not None else 0))
+        
         t_pose = time.time()
 
         img_show = frame.copy()
+        tid_to_detidx = {}  # reset for this frame
 
         if keypoints is not None and len(keypoints) > 0:
             # Draw skeleton
             img_show = draw_skeleton(img_show, keypoints, scores,
                                      openpose_skeleton=False, kpt_thr=args.kpt_thr)
 
-            # Extract & normalize skeleton (17 or 65 joints)
-            kp_body, sc_body = extract_skeleton(keypoints, scores, num_joints=num_joints, person_idx=0)
-            if kp_body is not None:
-                kp_norm = normalize_frame(kp_body, sc_body)
-                frame_buffer.append(kp_norm)
+            # 각 detection을 track에 업데이트
+            for det_idx, tid in enumerate(track_ids):
+                tid_to_detidx[tid] = det_idx
+                
+                # Extract & normalize skeleton
+                kp_body, sc_body = extract_skeleton(keypoints, scores, num_joints=num_joints, person_idx=det_idx)
+                if kp_body is not None:
+                    kp_norm = normalize_frame(kp_body, sc_body)
+                    
+                    # Track이 없으면 생성
+                    if tid not in tracks:
+                        tracks[tid] = TrackState(buf_size=args.buf_size)
+                    
+                    # 버퍼에 추가 및 상태 업데이트
+                    tracks[tid].buffer.append(kp_norm)
+                    tracks[tid].last_seen_frame = frame_count
+                    
+                    # bbox area 계산 (depth priority용)
+                    kp_px = keypoints[det_idx][:17]  # 17 body joints
+                    x_min, x_max = kp_px[:, 0].min(), kp_px[:, 0].max()
+                    y_min, y_max = kp_px[:, 1].min(), kp_px[:, 1].max()
+                    tracks[tid].bbox_area = (x_max - x_min) * (y_max - y_min)
 
             # ---- TCN inference (every N frames) ----
-            if frame_count % args.infer_every == 0 and len(frame_buffer) >= 5:
+            if frame_count % args.infer_every == 0:
                 t_tcn_start = time.time()
-                current_class, current_conf, current_probs = predict_tcn(
-                    model, frame_buffer, max_frames, num_classes, device,
-                    num_joints=num_joints
-                )
+                
+                # 모든 active track에 대해 TCN 추론
+                for tid, track in list(tracks.items()):
+                    if len(track.buffer) >= 5:
+                        track.pred_cls, track.pred_conf, track.pred_probs = predict_tcn(
+                            model, track.buffer, max_frames, num_classes, device,
+                            num_joints=num_joints
+                        )
+                
                 tcn_ms = (time.time() - t_tcn_start) * 1000
 
-            # Draw label
-            center = (keypoints[0][LEFT_SHOULDER] + keypoints[0][RIGHT_SHOULDER]) / 2.0
-            label_pos = (center[0], center[1] - 50)
-            draw_label(img_show, label_pos, current_class, current_conf,
-                       len(frame_buffer), args.buf_size)
+            # ---- hands_up 후보 선택 ----
+            hands_up_candidates = []
+            for tid, track in tracks.items():
+                if track.pred_cls in ["hands_up_single", "hands_up_both"] and track.pred_conf > 0.7:
+                    hands_up_candidates.append((tid, track))
+            
+            # 우선순위: hands_up_both > hands_up_single, bbox 크기 큰 순
+            hands_up_candidates.sort(
+                key=lambda x: (
+                    x[1].pred_cls == "hands_up_both",  # hands_up_both가 True = 1
+                    x[1].bbox_area
+                ),
+                reverse=True
+            )
+            
+            # 최우선 타겟 선택
+            if hands_up_candidates:
+                active_target_tid = hands_up_candidates[0][0]
+            else:
+                active_target_tid = None
+
+            # Draw labels for all tracks
+            for tid, track in tracks.items():
+                if tid in tid_to_detidx:
+                    det_idx = tid_to_detidx[tid]
+                    center = (keypoints[det_idx][LEFT_SHOULDER] + keypoints[det_idx][RIGHT_SHOULDER]) / 2.0
+                    label_pos = (center[0], center[1] - 50)
+                    
+                    # Active target은 강조 표시
+                    if tid == active_target_tid:
+                        color = (0, 255, 255)  # cyan - highlight
+                        label_text = f"TID:{tid} {track.pred_cls} {track.pred_conf:.0%} [TARGET]"
+                    else:
+                        label_text = f"TID:{tid} {track.pred_cls} {track.pred_conf:.0%}"
+                    
+                    color = CLASS_COLORS.get(track.pred_cls, (255, 255, 255))
+                    if tid == active_target_tid:
+                        color = (0, 255, 255)
+                    
+                    # Draw box around person if it's the target
+                    if tid == active_target_tid and det_idx < len(keypoints):
+                        kp_px = keypoints[det_idx][:17]
+                        x_min = int(kp_px[:, 0].min())
+                        x_max = int(kp_px[:, 0].max())
+                        y_min = int(kp_px[:, 1].min())
+                        y_max = int(kp_px[:, 1].max())
+                        cv2.rectangle(img_show, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+                    
+                    draw_label(img_show, label_pos, track.pred_cls, track.pred_conf,
+                               len(track.buffer), args.buf_size)
+
+        # ---- Clean up old tracks ----
+        dead_tids = [tid for tid, track in tracks.items() 
+                      if frame_count - track.last_seen_frame > TTL_FRAMES]
+        for tid in dead_tids:
+            del tracks[tid]
+            if active_target_tid == tid:
+                active_target_tid = None
 
         t_end = time.time()
 
@@ -554,8 +660,16 @@ def main():
         avg_fps = sum(fps_list) / len(fps_list)
 
         pose_ms = (t_pose - t_start) * 1000
+        
+        # HUD: 모든 track의 class 확률
+        all_probs = {}
+        if tracks:
+            # 현재 활성 track들의 probs를 취합 (첫 track 기준으로 표시)
+            first_track = next(iter(tracks.values()))
+            all_probs = first_track.pred_probs
+        
         draw_hud(img_show, avg_fps, pose_ms, tcn_ms,
-                 len(frame_buffer), args.buf_size, current_probs)
+                 sum(len(t.buffer) for t in tracks.values()), args.buf_size * len(tracks), all_probs)
 
         cv2.imshow("TCN Action Recognition", img_show)
 
@@ -563,10 +677,9 @@ def main():
         if key == ord('q'):
             break
         elif key == ord('r'):
-            frame_buffer.clear()
-            current_class = "unknown"
-            current_conf = 0.0
-            print("[Reset] Buffer cleared.")
+            tracks.clear()
+            active_target_tid = None
+            print("[Reset] All tracks cleared.")
 
     cap.release()
     cv2.destroyAllWindows()

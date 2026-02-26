@@ -347,7 +347,7 @@ def main():
     parser.add_argument("--source", type=str, default="0",
                         help="Video source: webcam index (0,1,...) or file path")
     parser.add_argument("--rtmlib_path", type=str,
-                        default="/home/gw/robocup_ws/src/rtmlib")
+                        default="rtmlib")
     parser.add_argument("--mode", type=str, default="balanced",
                         choices=["balanced", "performance", "lightweight"])
     parser.add_argument("--pose_device", type=str, default="cuda")
