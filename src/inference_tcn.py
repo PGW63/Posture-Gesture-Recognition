@@ -411,9 +411,10 @@ def predict_tcn_batch(model, track_items, max_frames, num_classes, device, num_j
 #  Drawing
 # ─────────────────────────────────────────────
 
-def draw_label(frame, position, class_name, confidence, buf_len, buf_max):
+def draw_label(frame, position, class_name, confidence, buf_len, buf_max, prefix=None):
     color = CLASS_COLORS.get(class_name, (255, 255, 255))
-    label = f"{class_name} {confidence:.0%}"
+    base = f"{class_name} {confidence:.0%}"
+    label = f"{prefix} {base}" if prefix else base
 
     cx, cy = int(position[0]), int(position[1])
 
@@ -766,17 +767,6 @@ def main():
                     center = (keypoints[det_idx][LEFT_SHOULDER] + keypoints[det_idx][RIGHT_SHOULDER]) / 2.0
                     label_pos = (center[0], center[1] - 50)
                     
-                    # Active target은 강조 표시
-                    if tid == active_target_tid:
-                        color = (0, 255, 255)  # cyan - highlight
-                        label_text = f"TID:{tid} {track.pred_cls} {track.pred_conf:.0%} [TARGET]"
-                    else:
-                        label_text = f"TID:{tid} {track.pred_cls} {track.pred_conf:.0%}"
-                    
-                    color = CLASS_COLORS.get(track.pred_cls, (255, 255, 255))
-                    if tid == active_target_tid:
-                        color = (0, 255, 255)
-                    
                     # Draw box around person if it's the target
                     if tid == active_target_tid and det_idx < len(keypoints):
                         kp_px = keypoints[det_idx][:17]
@@ -786,8 +776,13 @@ def main():
                         y_max = int(kp_px[:, 1].max())
                         cv2.rectangle(img_show, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
                     
-                    draw_label(img_show, label_pos, track.pred_cls, track.pred_conf,
-                               len(track.buffer), args.buf_size)
+                    prefix = f"TID:{tid}"
+                    if tid == active_target_tid:
+                        prefix += " [TARGET]"
+                    draw_label(
+                        img_show, label_pos, track.pred_cls, track.pred_conf,
+                        len(track.buffer), args.buf_size, prefix=prefix
+                    )
 
         # ---- Clean up old tracks ----
         dead_tids = [tid for tid, track in tracks.items()

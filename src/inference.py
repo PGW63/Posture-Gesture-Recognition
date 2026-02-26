@@ -114,11 +114,12 @@ def init_pose_tracker(rtmlib_path, device, backend, mode):
 
     tracker = PoseTracker(
         Wholebody,
-        det_frequency=7,
+        det_frequency=1,
         to_openpose=False,
         mode=mode,
         backend=backend,
         device=device,
+        tracking=False,
     )
     return tracker
 
@@ -159,9 +160,68 @@ def predict_frame(model, keypoints_133, scores_133, device):
     return IDX_TO_CLASS[pred_idx], confidence, probs_dict
 
 
-def draw_label(frame, position, class_name, confidence):
+@torch.no_grad()
+def predict_frames(model, keypoints, scores, device, max_persons=8):
+    """
+    Multi-person posture inference in one batch.
+    Args:
+        keypoints: (N,133,2)
+        scores:    (N,133)
+    Returns:
+        results: list[dict] ordered by person index
+    """
+    if keypoints is None or scores is None:
+        return []
+
+    n_det = min(len(keypoints), len(scores), max_persons)
+    feats = []
+    meta = []
+    for pidx in range(n_det):
+        person = np.concatenate([
+            keypoints[pidx].astype(np.float32),
+            scores[pidx][:, None].astype(np.float32),
+        ], axis=-1)
+        feature = _process_skeleton(person, augment=False)
+        if feature is None:
+            meta.append((pidx, None))
+            continue
+        feats.append(feature)
+        meta.append((pidx, len(feats) - 1))
+
+    if not feats:
+        return [{"person_idx": pidx, "class": "unknown", "confidence": 0.0, "probabilities": {}}
+                for pidx in range(n_det)]
+
+    feat_tensor = torch.tensor(np.stack(feats, axis=0), dtype=torch.float32).to(device)
+    outputs = model(feat_tensor)  # (B, C)
+    probs_all = torch.softmax(outputs, dim=1).detach().cpu().numpy()
+
+    results = []
+    for pidx, bidx in meta:
+        if bidx is None:
+            results.append({
+                "person_idx": pidx,
+                "class": "unknown",
+                "confidence": 0.0,
+                "probabilities": {},
+            })
+            continue
+        probs = probs_all[bidx]
+        pred_idx = int(np.argmax(probs))
+        results.append({
+            "person_idx": pidx,
+            "class": IDX_TO_CLASS[pred_idx],
+            "confidence": float(probs[pred_idx]),
+            "probabilities": {IDX_TO_CLASS[i]: float(probs[i]) for i in range(NUM_CLASSES)},
+        })
+
+    return results
+
+
+def draw_label(frame, position, class_name, confidence, prefix=None):
     color = CLASS_COLORS.get(class_name, (255, 255, 255))
-    label = f"{class_name} {confidence:.0%}"
+    base = f"{class_name} {confidence:.0%}"
+    label = f"{prefix} {base}" if prefix else base
 
     cx, cy = int(position[0]), int(position[1])
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
@@ -200,6 +260,11 @@ def run_webcam(model, device, args):
     tracker = init_pose_tracker(
         args.rtmlib_path, args.pose_device, args.backend, args.mode
     )
+    # Optional runtime knobs
+    try:
+        tracker.det_frequency = max(1, int(args.det_frequency))
+    except Exception:
+        pass
 
     # Source
     source = int(args.source) if args.source.isdigit() else args.source
@@ -232,7 +297,7 @@ def run_webcam(model, device, args):
                 model, keypoints[pidx], scores[pidx], device
             )
             center = (keypoints[pidx][LEFT_SHOULDER] + keypoints[pidx][RIGHT_SHOULDER]) / 2.0
-            draw_label(img_show, (center[0], center[1] - 60), cls_name, conf)
+            draw_label(img_show, (center[0], center[1] - 60), cls_name, conf, prefix=f"P{pidx}")
 
             print(f"\n  Person {pidx}: {cls_name} ({conf:.1%})")
             for c, p in probs_dict.items():
@@ -263,8 +328,6 @@ def run_webcam(model, device, args):
         for _ in range(5):
             cap.read()
 
-    current_class = "unknown"
-    current_conf = 0.0
     current_probs = {}
     mlp_ms = 0.0
     frame_count = 0
@@ -292,19 +355,35 @@ def run_webcam(model, device, args):
 
         img_show = frame.copy()
 
-        if keypoints is not None and len(keypoints) > 0:
+        if keypoints is not None and scores is not None and len(keypoints) > 0:
             img_show = draw_skeleton(img_show, keypoints, scores,
                                      openpose_skeleton=False, kpt_thr=args.kpt_thr)
 
-            # MLP inference for first person
+            # MLP inference for multiple persons (batched)
             t_mlp_start = time.time()
-            current_class, current_conf, current_probs = predict_frame(
-                model, keypoints[0], scores[0], device
+            results = predict_frames(
+                model, keypoints, scores, device, max_persons=args.max_persons_infer
             )
             mlp_ms = (time.time() - t_mlp_start) * 1000
 
-            center = (keypoints[0][LEFT_SHOULDER] + keypoints[0][RIGHT_SHOULDER]) / 2.0
-            draw_label(img_show, (center[0], center[1] - 60), current_class, current_conf)
+            # Draw labels for each inferred person
+            for r in results:
+                pidx = r["person_idx"]
+                center = (keypoints[pidx][LEFT_SHOULDER] + keypoints[pidx][RIGHT_SHOULDER]) / 2.0
+                draw_label(
+                    img_show,
+                    (center[0], center[1] - 60),
+                    r["class"],
+                    r["confidence"],
+                    prefix=f"P{pidx}",
+                )
+
+            # HUD probability bars: highest-confidence visible person
+            if results:
+                best = max(results, key=lambda x: x["confidence"])
+                current_probs = best["probabilities"]
+            else:
+                current_probs = {}
 
         t_end = time.time()
 
@@ -353,6 +432,10 @@ def main():
     parser.add_argument("--pose_device", type=str, default="cuda")
     parser.add_argument("--backend", type=str, default="onnxruntime")
     parser.add_argument("--kpt_thr", type=float, default=0.4)
+    parser.add_argument("--max_persons_infer", type=int, default=8,
+                        help="Max persons to run posture inference on per frame")
+    parser.add_argument("--det_frequency", type=int, default=1,
+                        help="Pose detector frequency for tracker (lower is more stable)")
 
     args = parser.parse_args()
 
