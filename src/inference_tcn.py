@@ -58,6 +58,7 @@ class TrackState:
         self.pred_probs = {}
         self.last_seen_frame = 0
         self.last_center = None
+        self.missing_frames = 0
         self.last_depth_z = None
         self.bbox_area = 0  # for priority in hands_up selection
 
@@ -85,6 +86,10 @@ def parse_args():
                         help="Pose detector frequency for rtmlib PoseTracker (lower is more stable)")
     parser.add_argument("--track_match_dist", type=float, default=120.0,
                         help="Pixel distance threshold for local track matching")
+    parser.add_argument("--grace_frames", type=int, default=15,
+                        help="Keep disconnected tracks reconnectable for N frames")
+    parser.add_argument("--ttl_frames", type=int, default=45,
+                        help="Remove track if missing for more than N frames")
     return parser.parse_args()
 
 
@@ -616,7 +621,8 @@ def main():
     fps_list = []
     fail_count = 0
     tcn_ms = 0.0
-    TTL_FRAMES = 30  # Remove track if not seen for 30 frames
+    RECONNECT_FRAMES = max(0, int(args.grace_frames))
+    TTL_FRAMES = max(RECONNECT_FRAMES + 1, int(args.ttl_frames))
 
     print(f"\nStarted! Buffer size: {args.buf_size}, "
           f"Infer every: {args.infer_every} frames")
@@ -663,12 +669,14 @@ def main():
                 det_centers.append((cx, cy))
 
             det_to_tid, next_tid = match_detections_to_tracks(
-                det_centers, tracks, frame_count, TTL_FRAMES, args.track_match_dist, next_tid
+                det_centers, tracks, frame_count, RECONNECT_FRAMES, args.track_match_dist, next_tid
             )
 
+            visible_tids = set()
             for det_idx in range(n_det):
                 tid = int(det_to_tid[det_idx])
                 tid_to_detidx[tid] = det_idx
+                visible_tids.add(tid)
                 
                 # Extract & normalize skeleton
                 kp_body, sc_body = extract_skeleton(keypoints, scores, num_joints=num_joints, person_idx=det_idx)
@@ -683,6 +691,7 @@ def main():
                     tracks[tid].buffer.append(kp_norm)
                     tracks[tid].last_seen_frame = frame_count
                     tracks[tid].last_center = det_centers[det_idx]
+                    tracks[tid].missing_frames = 0
                     
                     # bbox area 계산 (depth priority용)
                     kp_px = keypoints[det_idx][:17]  # 17 body joints
@@ -713,9 +722,17 @@ def main():
                 
                 tcn_ms = (time.time() - t_tcn_start) * 1000
 
+            # 이번 프레임에 보이지 않은 track만 miss count 증가
+            for tid, track in tracks.items():
+                if tid not in visible_tids:
+                    track.missing_frames = frame_count - track.last_seen_frame
+
             # ---- hands_up 후보 선택 ----
             hands_up_candidates = []
             for tid, track in tracks.items():
+                # 화면에 있는 사람만 현재 target 후보로 사용
+                if tid not in tid_to_detidx:
+                    continue
                 if track.pred_cls in ["hands_up_single", "hands_up_both"] and track.pred_conf > 0.7:
                     hands_up_candidates.append((tid, track))
             
@@ -732,7 +749,15 @@ def main():
             if hands_up_candidates:
                 active_target_tid = hands_up_candidates[0][0]
             else:
-                active_target_tid = None
+                # 기존 타겟이 잠깐 가려진 경우 grace 동안 유지
+                if (
+                    active_target_tid is not None
+                    and active_target_tid in tracks
+                    and tracks[active_target_tid].missing_frames <= RECONNECT_FRAMES
+                ):
+                    pass
+                else:
+                    active_target_tid = None
 
             # Draw labels for all tracks
             for tid, track in tracks.items():
@@ -765,8 +790,8 @@ def main():
                                len(track.buffer), args.buf_size)
 
         # ---- Clean up old tracks ----
-        dead_tids = [tid for tid, track in tracks.items() 
-                      if frame_count - track.last_seen_frame > TTL_FRAMES]
+        dead_tids = [tid for tid, track in tracks.items()
+                     if frame_count - track.last_seen_frame > TTL_FRAMES]
         for tid in dead_tids:
             del tracks[tid]
             if active_target_tid == tid:
