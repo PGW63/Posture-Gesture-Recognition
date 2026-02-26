@@ -42,6 +42,12 @@ class TrackManager:
     def __contains__(self, tid):
         return tid in self._tracks
 
+    def __len__(self):
+        return len(self._tracks)
+
+    def __iter__(self):
+        return iter(self._tracks)
+
     def __getitem__(self, tid):
         return self._tracks[tid]
 
