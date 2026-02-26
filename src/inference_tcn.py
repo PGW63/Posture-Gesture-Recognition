@@ -78,6 +78,8 @@ def parse_args():
                         help="Frame buffer size for TCN (default: 60)")
     parser.add_argument("--infer_every", type=int, default=5,
                         help="Run TCN every N frames (default: 5)")
+    parser.add_argument("--max_tracks_infer", type=int, default=8,
+                        help="Max number of tracks to run TCN on per inference step")
     return parser.parse_args()
 
 
@@ -218,6 +220,22 @@ def buffer_to_tensor(frame_buffer, max_frames, device, num_joints=65):
     return features, mask
 
 
+def buffers_to_batch_tensors(frame_buffers, max_frames, device, num_joints=65):
+    """
+    frame_buffers: list of deque[(V,2)]
+    Returns:
+        features: (B, V*2, T)
+        mask:     (B, T)
+    """
+    feature_list = []
+    mask_list = []
+    for frame_buffer in frame_buffers:
+        feat, m = buffer_to_tensor(frame_buffer, max_frames, device, num_joints)
+        feature_list.append(feat)
+        mask_list.append(m)
+    return torch.cat(feature_list, dim=0), torch.cat(mask_list, dim=0)
+
+
 # ─────────────────────────────────────────────
 #  TCN inference
 # ─────────────────────────────────────────────
@@ -342,6 +360,41 @@ def predict_tcn(model, frame_buffer, max_frames, num_classes, device, num_joints
     confidence = probs_dict[pred_cls]
 
     return pred_cls, confidence, probs_dict
+
+
+@torch.no_grad()
+def predict_tcn_batch(model, track_items, max_frames, num_classes, device, num_joints=65):
+    """
+    Batch TCN inference for multiple tracks.
+    Args:
+        track_items: list[(tid, TrackState)]
+    Returns:
+        dict: tid -> (pred_cls, confidence, probs_dict)
+    """
+    valid = [(tid, tr) for tid, tr in track_items if len(tr.buffer) >= 5]
+    if not valid:
+        return {}
+
+    buffers = [tr.buffer for _, tr in valid]
+    features, mask = buffers_to_batch_tensors(buffers, max_frames, device, num_joints)
+    logits = model(features, mask)  # (B, C)
+    probs_batch = torch.softmax(logits, dim=1).detach().cpu().numpy()
+
+    out = {}
+    for i, (tid, track) in enumerate(valid):
+        probs = probs_batch[i]
+        probs_dict = {
+            NTU_ACTION_NAMES.get(c, f"class_{c}"): float(probs[c])
+            for c in range(num_classes)
+        }
+        pose_features = compute_pose_features(track.buffer)
+        probs_dict = adjust_probs(probs_dict, pose_features, num_classes)
+
+        pred_cls = max(probs_dict, key=probs_dict.get)
+        confidence = probs_dict[pred_cls]
+        out[tid] = (pred_cls, confidence, probs_dict)
+
+    return out
 
 
 # ─────────────────────────────────────────────
@@ -555,7 +608,17 @@ def main():
                                      openpose_skeleton=False, kpt_thr=args.kpt_thr)
 
             # 각 detection을 track에 업데이트
-            for det_idx, tid in enumerate(track_ids):
+            n_det = min(len(keypoints), len(scores))
+            if len(track_ids) != n_det:
+                # rtmlib 버전에 따라 track_ids 길이가 다를 수 있어 안전하게 보정
+                if len(track_ids) < n_det:
+                    next_tid = (max(tracks.keys()) + 1) if tracks else 0
+                    track_ids = list(track_ids) + list(range(next_tid, next_tid + (n_det - len(track_ids))))
+                else:
+                    track_ids = list(track_ids)[:n_det]
+
+            for det_idx in range(n_det):
+                tid = int(track_ids[det_idx])
                 tid_to_detidx[tid] = det_idx
                 
                 # Extract & normalize skeleton
@@ -581,13 +644,22 @@ def main():
             if frame_count % args.infer_every == 0:
                 t_tcn_start = time.time()
                 
-                # 모든 active track에 대해 TCN 추론
-                for tid, track in list(tracks.items()):
-                    if len(track.buffer) >= 5:
-                        track.pred_cls, track.pred_conf, track.pred_probs = predict_tcn(
-                            model, track.buffer, max_frames, num_classes, device,
-                            num_joints=num_joints
-                        )
+                # 최근 관측된 track 우선으로 배치 추론
+                infer_candidates = [
+                    (tid, tr) for tid, tr in tracks.items()
+                    if (frame_count - tr.last_seen_frame) <= 1 and len(tr.buffer) >= 5
+                ]
+                infer_candidates.sort(key=lambda x: x[1].bbox_area, reverse=True)
+                infer_candidates = infer_candidates[:args.max_tracks_infer]
+
+                pred_map = predict_tcn_batch(
+                    model, infer_candidates, max_frames, num_classes, device,
+                    num_joints=num_joints
+                )
+                for tid, (pred_cls, pred_conf, pred_probs) in pred_map.items():
+                    tracks[tid].pred_cls = pred_cls
+                    tracks[tid].pred_conf = pred_conf
+                    tracks[tid].pred_probs = pred_probs
                 
                 tcn_ms = (time.time() - t_tcn_start) * 1000
 
