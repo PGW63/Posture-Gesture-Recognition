@@ -57,6 +57,7 @@ class TrackState:
         self.pred_conf = 0.0
         self.pred_probs = {}
         self.last_seen_frame = 0
+        self.last_center = None
         self.last_depth_z = None
         self.bbox_area = 0  # for priority in hands_up selection
 
@@ -80,6 +81,10 @@ def parse_args():
                         help="Run TCN every N frames (default: 5)")
     parser.add_argument("--max_tracks_infer", type=int, default=8,
                         help="Max number of tracks to run TCN on per inference step")
+    parser.add_argument("--det_frequency", type=int, default=1,
+                        help="Pose detector frequency for rtmlib PoseTracker (lower is more stable)")
+    parser.add_argument("--track_match_dist", type=float, default=120.0,
+                        help="Pixel distance threshold for local track matching")
     return parser.parse_args()
 
 
@@ -443,6 +448,50 @@ def draw_hud(frame, fps, pose_ms, tcn_ms, buf_len, buf_max, probs_dict=None):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
 
+def match_detections_to_tracks(det_centers, tracks, frame_count, ttl_frames, dist_thr, next_tid):
+    """
+    Greedy center-distance matching between detections and existing tracks.
+    Returns:
+        det_to_tid: list[int] length=len(det_centers)
+        next_tid: updated next_tid
+    """
+    n_det = len(det_centers)
+    det_to_tid = [-1] * n_det
+    if n_det == 0:
+        return det_to_tid, next_tid
+
+    active_tids = [
+        tid for tid, tr in tracks.items()
+        if (frame_count - tr.last_seen_frame) <= ttl_frames and tr.last_center is not None
+    ]
+    unmatched_dets = set(range(n_det))
+    unmatched_tids = set(active_tids)
+
+    while unmatched_dets and unmatched_tids:
+        best = None
+        for d in unmatched_dets:
+            cx, cy = det_centers[d]
+            for tid in unmatched_tids:
+                tx, ty = tracks[tid].last_center
+                dist = float(np.hypot(cx - tx, cy - ty))
+                if best is None or dist < best[0]:
+                    best = (dist, d, tid)
+
+        if best is None or best[0] > dist_thr:
+            break
+
+        _, d, tid = best
+        det_to_tid[d] = tid
+        unmatched_dets.remove(d)
+        unmatched_tids.remove(tid)
+
+    for d in unmatched_dets:
+        det_to_tid[d] = next_tid
+        next_tid += 1
+
+    return det_to_tid, next_tid
+
+
 # ─────────────────────────────────────────────
 #  Main
 # ─────────────────────────────────────────────
@@ -469,12 +518,13 @@ def main():
     print(f"Initializing PoseTracker (mode: {args.mode})...")
     wholebody = PoseTracker(
         Wholebody,
-        det_frequency=7,
+        det_frequency=max(1, int(args.det_frequency)),
         to_openpose=False,
         mode=args.mode,
         backend="onnxruntime",
         device=args.device,
-        return_track_ids=True,
+        tracking=False,
+        return_track_ids=False,
     )
 
     # ===== Video source =====
@@ -558,12 +608,11 @@ def main():
 
     # Track-wise frame buffers and states
     tracks = {}  # tid -> TrackState
-    tid_to_detidx = {}  # tid -> detection index in current frame (for depth)
-
     # Current target
     active_target_tid = None
 
     frame_count = 0
+    next_tid = 0
     fps_list = []
     fail_count = 0
     tcn_ms = 0.0
@@ -589,36 +638,36 @@ def main():
         # ---- Pose detection ----
         result = wholebody(frame)
         
-        # return_track_ids=True이므로 track_ids 포함
-        if len(result) == 3:
-            keypoints, scores, track_ids = result
+        if isinstance(result, (tuple, list)) and len(result) >= 2:
+            keypoints, scores = result[0], result[1]
         else:
-            # 혹시 모를 호환성
-            keypoints, scores = result
-            track_ids = list(range(len(keypoints) if keypoints is not None else 0))
+            keypoints, scores = None, None
         
         t_pose = time.time()
 
         img_show = frame.copy()
         tid_to_detidx = {}  # reset for this frame
 
-        if keypoints is not None and len(keypoints) > 0:
+        if keypoints is not None and scores is not None and len(keypoints) > 0:
             # Draw skeleton
             img_show = draw_skeleton(img_show, keypoints, scores,
                                      openpose_skeleton=False, kpt_thr=args.kpt_thr)
 
             # 각 detection을 track에 업데이트
             n_det = min(len(keypoints), len(scores))
-            if len(track_ids) != n_det:
-                # rtmlib 버전에 따라 track_ids 길이가 다를 수 있어 안전하게 보정
-                if len(track_ids) < n_det:
-                    next_tid = (max(tracks.keys()) + 1) if tracks else 0
-                    track_ids = list(track_ids) + list(range(next_tid, next_tid + (n_det - len(track_ids))))
-                else:
-                    track_ids = list(track_ids)[:n_det]
+            det_centers = []
+            for det_idx in range(n_det):
+                kp_px = keypoints[det_idx][:17]
+                cx = float((kp_px[LEFT_SHOULDER][0] + kp_px[RIGHT_SHOULDER][0]) * 0.5)
+                cy = float((kp_px[LEFT_SHOULDER][1] + kp_px[RIGHT_SHOULDER][1]) * 0.5)
+                det_centers.append((cx, cy))
+
+            det_to_tid, next_tid = match_detections_to_tracks(
+                det_centers, tracks, frame_count, TTL_FRAMES, args.track_match_dist, next_tid
+            )
 
             for det_idx in range(n_det):
-                tid = int(track_ids[det_idx])
+                tid = int(det_to_tid[det_idx])
                 tid_to_detidx[tid] = det_idx
                 
                 # Extract & normalize skeleton
@@ -633,6 +682,7 @@ def main():
                     # 버퍼에 추가 및 상태 업데이트
                     tracks[tid].buffer.append(kp_norm)
                     tracks[tid].last_seen_frame = frame_count
+                    tracks[tid].last_center = det_centers[det_idx]
                     
                     # bbox area 계산 (depth priority용)
                     kp_px = keypoints[det_idx][:17]  # 17 body joints
