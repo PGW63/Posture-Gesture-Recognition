@@ -34,7 +34,12 @@ Thumbs.db
 !assets/**
 
 # ===== ROS =====
-.COLCON_IGNORE
+ros2_ws/install
+ros2_ws/build
+ros2_ws/log
 
 # ===== Misc =====
 *.log
+
+# ===== Communication =====
+temproal_communication

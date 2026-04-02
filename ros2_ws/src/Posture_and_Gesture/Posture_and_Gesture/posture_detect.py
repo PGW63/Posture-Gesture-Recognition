@@ -5,10 +5,26 @@ import numpy as np
 import sys
 import os
 import threading
+from pathlib import Path
 
-sys.path.append(
-    os.path.join("/home/gw/Posture-Gesture-Recognition")
-)
+def _find_repo_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in [current.parent] + list(current.parents):
+        if (
+            (parent / 'models' / 'mlp.py').exists()
+            and (parent / 'runtime' / 'frame_inferencer.py').exists()
+            and (parent / 'data' / 'dataset.py').exists()
+        ):
+            return parent
+    raise RuntimeError(f"Could not locate repository root from {current}")
+
+
+REPO_ROOT = _find_repo_root()
+VENDORED_RTMLIB_ROOT = REPO_ROOT / 'rtmlib'
+for path in (REPO_ROOT, VENDORED_RTMLIB_ROOT):
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 from models.mlp import MLP
 from data.dataset import NUM_CLASSES
@@ -17,13 +33,9 @@ from runtime.frame_inferencer import MLPFrameInferencer
 from rclpy.node import Node
 import rclpy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-from std_msgs.msg import String
-from sensor_msgs.msg import Image, CameraInfo, CompressedImage
-from inha_interfaces.msg import ImageBbox
+from sensor_msgs.msg import Image, CompressedImage
 from inha_interfaces.srv import PostureDetection
-from vision_msgs.msg import BoundingBox2D
-from ament_index_python.packages import get_package_share_directory
-
+from vision_msgs.msg import BoundingBox2D, Detection2D, Detection2DArray, ObjectHypothesisWithPose
 
 class PostureDetectNode(Node):
     def __init__(self):
@@ -55,6 +67,8 @@ class PostureDetectNode(Node):
         self.declare_parameter('input_topic','/camera/camera_head/color/image_raw/compressed')
         self.declare_parameter('image_transport','compressed')
         self.declare_parameter('output_topic', '/posture_detection')
+        self.declare_parameter('output_image_topic', '')
+        self.declare_parameter('output_detection_topic', '')
 
         self.device = self.get_parameter('device').get_parameter_value().string_value
         self.det_frequency = self.get_parameter('det_frequency').get_parameter_value().integer_value
@@ -67,6 +81,10 @@ class PostureDetectNode(Node):
         self.input_topic = self.get_parameter('input_topic').get_parameter_value().string_value
         self.image_transport = self.get_parameter('image_transport').get_parameter_value().string_value
         self.output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
+        output_image_topic = self.get_parameter('output_image_topic').get_parameter_value().string_value
+        output_detection_topic = self.get_parameter('output_detection_topic').get_parameter_value().string_value
+        self.output_image_topic = output_image_topic or f'{self.output_topic}/image'
+        self.output_detection_topic = output_detection_topic or f'{self.output_topic}/detections'
 
         self.get_logger().info(
             f"""PostureDetectNode initialized with device={self.device},
@@ -75,9 +93,15 @@ class PostureDetectNode(Node):
             mode={self.mode}, """
         )
 
-        self.pub = self.create_publisher(
-            ImageBbox, 
-            self.output_topic,
+        self.image_pub = self.create_publisher(
+            Image,
+            self.output_image_topic,
+            self.qos_best_effort
+        )
+
+        self.detection_pub = self.create_publisher(
+            Detection2DArray,
+            self.output_detection_topic,
             self.qos_best_effort
         )
 
@@ -91,13 +115,12 @@ class PostureDetectNode(Node):
         self.get_logger().info(
             f"""Subscribing to {self.input_topic} 
             with transport {self.image_transport}.
-            Publishing results to {self.output_topic}."""
+            Publishing image to {self.output_image_topic}.
+            Publishing detections to {self.output_detection_topic}."""
         )
         
         # Initialize model
-        package_name = get_package_share_directory(self.package_name)
-        # model_path = os.path.join(package_name, 'models', 'best_model.pth')
-        model_path = os.path.join('/home/gw/Posture-Gesture-Recognition', 'models', 'best_model.pth')
+        model_path = REPO_ROOT / 'models' / 'best_model.pth'
 
         if torch.cuda.is_available() and self.device == 'cuda':
             self.device = torch.device('cuda')
@@ -105,7 +128,7 @@ class PostureDetectNode(Node):
             self.device = torch.device('cpu')
             self.get_logger().warn("CUDA not available, using CPU instead.")
         
-        checkpoint = torch.load(model_path, map_location=self.device, weights_only=True)
+        checkpoint = torch.load(str(model_path), map_location=self.device, weights_only=True)
         self.model = MLP(
             input_dim=checkpoint.get("input_dim", 50),
             num_classes=checkpoint.get("num_classes", NUM_CLASSES),
@@ -138,19 +161,6 @@ class PostureDetectNode(Node):
         )
 
     def image_callback(self, msg):
-        """
-        ImageBbox Message Structure:
-        
-        Header header
-        string frame_id
-        time stamp
-
-        Image image
-        BoundingBox2D[] bboxes
-        string[] track_id
-        string[] det_index
-        string[] class_name
-        """
         if not self._action_active:
             return
         
@@ -173,36 +183,49 @@ class PostureDetectNode(Node):
         ### result.detections -> track_id, det_index, class_name, confidence, keypoint_scores
         ###                      probabilities, center_xy, bbox_xyxy, skeleton_xy
 
-        out = ImageBbox()
-        out.header = msg.header
-        out.header.frame_id = "camera_head_color_optical_frame"
-        out.header.stamp = self.get_clock().now().to_msg()
+        header = msg.header
+        header.frame_id = "camera_head_color_optical_frame"
+        header.stamp = self.get_clock().now().to_msg()
 
         dbg_bgr = cv2.cvtColor(result.debug_image, cv2.COLOR_RGB2BGR)
-        out.image.height = int(dbg_bgr.shape[0])
-        out.image.width = int(dbg_bgr.shape[1])
-        out.image.encoding = 'bgr8'
-        out.image.step = int(dbg_bgr.shape[1] * 3)
-        out.image.data = dbg_bgr.tobytes()
+        image_msg = Image()
+        image_msg.header = header
+        image_msg.height = int(dbg_bgr.shape[0])
+        image_msg.width = int(dbg_bgr.shape[1])
+        image_msg.encoding = 'bgr8'
+        image_msg.is_bigendian = False
+        image_msg.step = int(dbg_bgr.shape[1] * 3)
+        image_msg.data = dbg_bgr.tobytes()
+
+        detection_array = Detection2DArray()
+        detection_array.header = header
 
         for det in result.detections:
-            track_id, det_index, class_name, confidence, keypoint_scores, probs, center_xy, bbox_xyxy, skeleton_xy = det
+            if self.target_class and det.class_name not in self.target_class:
+                continue
 
-            if self.target_class and class_name not in self.target_class:
+            if det.bbox_xyxy is None:
                 continue
 
             bb = BoundingBox2D()
-            bb.center.x = float((bbox_xyxy[0] + bbox_xyxy[2]) / 2.0)
-            bb.center.y = float((bbox_xyxy[1] + bbox_xyxy[3]) / 2.0)
-            bb.size_x = float(bbox_xyxy[2] - bbox_xyxy[0])
-            bb.size_y = float(bbox_xyxy[3] - bbox_xyxy[1])
+            bb.center.position.x = float((det.bbox_xyxy[0] + det.bbox_xyxy[2]) / 2.0)
+            bb.center.position.y = float((det.bbox_xyxy[1] + det.bbox_xyxy[3]) / 2.0)
+            bb.size_x = float(det.bbox_xyxy[2] - det.bbox_xyxy[0])
+            bb.size_y = float(det.bbox_xyxy[3] - det.bbox_xyxy[1])
 
-            out.bboxes.append(bb)
-            out.track_id.append(str(track_id))
-            out.det_index.append(str(det_index))
-            out.class_name.append(str(class_name))
+            detection = Detection2D()
+            detection.header = header
+            detection.bbox = bb
+            detection.id = f"track:{det.track_id};det:{det.det_index}"
 
-        self.pub.publish(out)
+            hypothesis = ObjectHypothesisWithPose()
+            hypothesis.hypothesis.class_id = str(det.class_name)
+            hypothesis.hypothesis.score = float(det.confidence)
+            detection.results.append(hypothesis)
+            detection_array.detections.append(detection)
+
+        self.image_pub.publish(image_msg)
+        self.detection_pub.publish(detection_array)
         
     
     def posture_detection_callback(self, request, response):
