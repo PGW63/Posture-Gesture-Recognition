@@ -1,6 +1,55 @@
 import cv2
 
 
+def draw_detection_overlay(
+    frame,
+    bbox_xyxy,
+    center_xy,
+    class_name,
+    confidence,
+    class_colors,
+    track_id=None,
+    extra_lines=None,
+    font_scale=0.7,
+    thickness=2,
+):
+    color = class_colors.get(class_name, (255, 255, 255))
+    frame_h, frame_w = frame.shape[:2]
+
+    if bbox_xyxy is not None:
+        x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+    if center_xy is not None:
+        cx, cy = int(center_xy[0]), int(center_xy[1])
+        cv2.circle(frame, (cx, cy), 4, color, -1)
+        cv2.circle(frame, (cx, cy), 7, (255, 255, 255), 1)
+    elif bbox_xyxy is not None:
+        cx = int((bbox_xyxy[0] + bbox_xyxy[2]) * 0.5)
+        cy = int((bbox_xyxy[1] + bbox_xyxy[3]) * 0.5)
+    else:
+        return
+
+    label_y = cy - 50
+    if bbox_xyxy is not None:
+        label_y = max(24, int(bbox_xyxy[1]) - 10)
+    label_x = min(max(cx, 40), max(40, frame_w - 40))
+    label_y = min(max(label_y, 24), max(24, frame_h - 24))
+
+    prefix = f"TID:{track_id}" if track_id is not None else None
+    draw_track_label(
+        frame,
+        (label_x, label_y),
+        class_name,
+        confidence,
+        class_colors,
+        prefix=prefix,
+        extra_lines=extra_lines,
+        font_scale=font_scale,
+        thickness=thickness,
+    )
+
+
 def draw_track_label(
     frame,
     position,
@@ -16,8 +65,11 @@ def draw_track_label(
     base = f"{class_name} {confidence:.0%}"
     label = f"{prefix} {base}" if prefix else base
 
+    frame_h, frame_w = frame.shape[:2]
     cx, cy = int(position[0]), int(position[1])
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    cx = min(max(cx, tw // 2 + 6), max(tw // 2 + 6, frame_w - tw // 2 - 6))
+    cy = min(max(cy, th + 12), max(th + 12, frame_h - 6))
     cv2.rectangle(
         frame,
         (cx - tw // 2 - 5, cy - th - 10),
@@ -39,10 +91,11 @@ def draw_track_label(
         return
 
     for i, line in enumerate(extra_lines, start=1):
+        text_y = min(cy + 20 + (i - 1) * 18, frame_h - 6)
         cv2.putText(
             frame,
             str(line),
-            (cx - tw // 2, cy + 20 + (i - 1) * 18),
+            (cx - tw // 2, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             color,
@@ -80,4 +133,3 @@ def draw_prob_bars(
         cv2.rectangle(frame, (10, y - 12), (10 + int(bar_w * prob), y + 4), color, -1)
         label = f"{cls_name[:label_max_chars]:{label_max_chars}s} {prob:.0%}"
         cv2.putText(frame, label, (10 + bar_w + 5, y + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
-

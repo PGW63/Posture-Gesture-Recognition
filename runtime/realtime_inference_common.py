@@ -57,13 +57,26 @@ def get_shoulder_center(person_keypoints, left_shoulder=5, right_shoulder=6):
     return float(center[0]), float(center[1])
 
 
-def update_track_from_keypoints(track, body_keypoints_17, center, frame_count):
+def update_track_from_keypoints(
+    track,
+    keypoints_xy,
+    center,
+    frame_count,
+    keypoint_scores=None,
+    score_thr=0.15,
+):
     track.last_seen_frame = frame_count
     track.last_center = (float(center[0]), float(center[1]))
     track.missing_frames = 0
 
-    x_min, x_max = body_keypoints_17[:, 0].min(), body_keypoints_17[:, 0].max()
-    y_min, y_max = body_keypoints_17[:, 1].min(), body_keypoints_17[:, 1].max()
+    pts = keypoints_xy
+    if keypoint_scores is not None and len(keypoint_scores) == len(keypoints_xy):
+        valid = keypoint_scores >= float(score_thr)
+        if valid.any():
+            pts = keypoints_xy[valid]
+
+    x_min, x_max = pts[:, 0].min(), pts[:, 0].max()
+    y_min, y_max = pts[:, 1].min(), pts[:, 1].max()
     w = float(x_max - x_min)
     h = float(y_max - y_min)
 
@@ -80,4 +93,3 @@ def format_track_state_line(tid, state, include_buffer=False):
         f"  tid={tid} cls={state['pred_cls']} conf={state['pred_conf']:.2f} "
         f"{buf_str}miss={state['missing_frames']} center={center_str}"
     )
-

@@ -295,8 +295,15 @@ def main():
                     
                     # 버퍼에 추가 및 상태 업데이트
                     tracks[tid].buffer.append(kp_norm)
-                    kp_px = keypoints[det_idx][:17]  # 17 body joints
-                    update_track_from_keypoints(tracks[tid], kp_px, det_centers[det_idx], frame_count)
+                    kp_xy = keypoints[det_idx]
+                    kp_scores = scores[det_idx]
+                    update_track_from_keypoints(
+                        tracks[tid],
+                        kp_xy,
+                        det_centers[det_idx],
+                        frame_count,
+                        keypoint_scores=kp_scores,
+                    )
 
             # ---- TCN inference (every N frames) ----
             if frame_count % args.infer_every == 0:

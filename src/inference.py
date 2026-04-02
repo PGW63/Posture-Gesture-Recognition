@@ -195,8 +195,15 @@ def run_webcam(model, device, args):
                 tracks[tid].pred_conf = r["confidence"]
                 tracks[tid].pred_probs = r["probabilities"]
                 center = get_shoulder_center(keypoints[pidx])
-                kp_px = keypoints[pidx][:17]
-                update_track_from_keypoints(tracks[tid], kp_px, center, frame_count)
+                kp_xy = keypoints[pidx]
+                kp_scores = scores[pidx]
+                update_track_from_keypoints(
+                    tracks[tid],
+                    kp_xy,
+                    center,
+                    frame_count,
+                    keypoint_scores=kp_scores,
+                )
                 st = tracks.get_track_state(tid)
                 if st is not None and st.get("last_center") is not None:
                     sx, sy = st["last_center"]

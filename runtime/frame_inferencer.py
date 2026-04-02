@@ -9,7 +9,7 @@ from runtime.realtime_inference_common import (
     init_pose_tracker,
     update_track_from_keypoints,
 )
-from runtime.realtime_viz import draw_basic_hud, draw_prob_bars, draw_track_label
+from runtime.realtime_viz import draw_basic_hud, draw_detection_overlay, draw_prob_bars
 from runtime.tcn_runtime import extract_skeleton, normalize_frame, predict_tcn_batch
 from utils.track_state import TrackManager, TrackState, match_centers_to_tracks
 
@@ -137,8 +137,15 @@ class MLPFrameInferencer:
                 self.tracks[tid] = TrackState(buf_size=1)
 
             center = get_shoulder_center(keypoints[pidx])
-            kp_px = keypoints[pidx][:17]
-            update_track_from_keypoints(self.tracks[tid], kp_px, center, self.frame_count)
+            kp_xy = keypoints[pidx]
+            kp_scores = scores[pidx]
+            update_track_from_keypoints(
+                self.tracks[tid],
+                kp_xy,
+                center,
+                self.frame_count,
+                keypoint_scores=kp_scores,
+            )
             self.tracks[tid].pred_cls = r["class"]
             self.tracks[tid].pred_conf = r["confidence"]
             self.tracks[tid].pred_probs = r["probabilities"]
@@ -155,17 +162,6 @@ class MLPFrameInferencer:
                 keypoint_scores=scores[pidx].astype(np.float32).tolist(),
             )
             detections.append(det)
-
-            if return_debug_image:
-                draw_track_label(
-                    debug_image,
-                    (center[0], center[1] - 60),
-                    det.class_name,
-                    det.confidence,
-                    self.class_colors,
-                    prefix=f"TID:{tid}",
-                    font_scale=0.8,
-                )
 
         for tid, tr in self.tracks.items():
             if tid not in visible_tids:
@@ -187,6 +183,25 @@ class MLPFrameInferencer:
             if detections:
                 best = max(detections, key=lambda x: x.confidence)
                 best_probs = best.probabilities
+            for det in detections:
+                extra_lines = []
+                if det.center_xy is not None:
+                    extra_lines.append(f"ctr=({det.center_xy[0]:.0f},{det.center_xy[1]:.0f})")
+                if det.bbox_xyxy is not None:
+                    bw = det.bbox_xyxy[2] - det.bbox_xyxy[0]
+                    bh = det.bbox_xyxy[3] - det.bbox_xyxy[1]
+                    extra_lines.append(f"bbox={bw:.0f}x{bh:.0f}")
+                draw_detection_overlay(
+                    debug_image,
+                    det.bbox_xyxy,
+                    det.center_xy,
+                    det.class_name,
+                    det.confidence,
+                    self.class_colors,
+                    track_id=det.track_id,
+                    extra_lines=extra_lines,
+                    font_scale=0.75,
+                )
             draw_basic_hud(debug_image, 0.0, f"Detections: {len(detections)}")
             draw_prob_bars(debug_image, best_probs, self.class_colors, start_y=90, row_h=24, label_max_chars=10)
 
@@ -285,8 +300,15 @@ class TCNFrameInferencer:
                 self.tracks[tid] = TrackState(buf_size=self.buf_size)
             self.tracks[tid].buffer.append(kp_norm)
 
-            kp_px = keypoints[det_idx][:17]
-            update_track_from_keypoints(self.tracks[tid], kp_px, det_centers[det_idx], self.frame_count)
+            kp_xy = keypoints[det_idx]
+            kp_scores = scores[det_idx]
+            update_track_from_keypoints(
+                self.tracks[tid],
+                kp_xy,
+                det_centers[det_idx],
+                self.frame_count,
+                keypoint_scores=kp_scores,
+            )
 
         if self.frame_count % self.infer_every == 0:
             infer_candidates = [
@@ -340,18 +362,6 @@ class TCNFrameInferencer:
             )
             detections.append(det)
 
-            if return_debug_image and center is not None:
-                draw_track_label(
-                    debug_image,
-                    (center[0], center[1] - 50),
-                    det.class_name,
-                    det.confidence,
-                    self.class_colors,
-                    prefix=f"TID:{tid}",
-                    extra_lines=[f"buf: {track['buffer_len']}/{self.buf_size}"],
-                    font_scale=0.8,
-                )
-
         if return_debug_image:
             debug_image = draw_skeleton(
                 debug_image,
@@ -364,8 +374,26 @@ class TCNFrameInferencer:
             if detections:
                 best = max(detections, key=lambda x: x.confidence)
                 best_probs = best.probabilities
+            for det in detections:
+                extra_lines = [f"buf: {self.tracks[det.track_id].buffer.maxlen and len(self.tracks[det.track_id].buffer)}/{self.buf_size}"]
+                if det.center_xy is not None:
+                    extra_lines.append(f"ctr=({det.center_xy[0]:.0f},{det.center_xy[1]:.0f})")
+                if det.bbox_xyxy is not None:
+                    bw = det.bbox_xyxy[2] - det.bbox_xyxy[0]
+                    bh = det.bbox_xyxy[3] - det.bbox_xyxy[1]
+                    extra_lines.append(f"bbox={bw:.0f}x{bh:.0f}")
+                draw_detection_overlay(
+                    debug_image,
+                    det.bbox_xyxy,
+                    det.center_xy,
+                    det.class_name,
+                    det.confidence,
+                    self.class_colors,
+                    track_id=det.track_id,
+                    extra_lines=extra_lines,
+                    font_scale=0.75,
+                )
             draw_basic_hud(debug_image, 0.0, f"Detections: {len(detections)}")
             draw_prob_bars(debug_image, best_probs, self.class_colors, start_y=90, row_h=22, label_max_chars=12)
 
         return FrameInferenceResult(detections, debug_image, keypoints, scores)
-
