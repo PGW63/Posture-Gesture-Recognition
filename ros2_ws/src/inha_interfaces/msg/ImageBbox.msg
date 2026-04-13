@@ -1,5 +1,5 @@
 std_msgs/Header header
-sensor_msgs/Image image
+sensor_msgs/CompressedImage image
 vision_msgs/BoundingBox2D[] bboxes
 string[] track_id
 string[] det_index

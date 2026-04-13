@@ -36,6 +36,102 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import Image, CompressedImage
 from inha_interfaces.srv import PostureDetection
 from vision_msgs.msg import BoundingBox2D, Detection2D, Detection2DArray, ObjectHypothesisWithPose
+from Posture_and_Gesture.image_msg_utils import bgr8_to_jpeg_compressed_image
+
+
+CLASS_COLORS = {
+    "sitting": (0, 165, 255),
+    "standing": (0, 255, 0),
+    "lying": (255, 0, 0),
+    "unknown": (80, 80, 80),
+}
+
+
+def _bbox_from_detection(det, frame_shape, min_score=0.2, margin=8.0):
+    if det.bbox_xyxy is not None:
+        x1, y1, x2, y2 = [float(v) for v in det.bbox_xyxy]
+    else:
+        points = np.asarray(det.skeleton_xy, dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] < 2 or points.size == 0:
+            return None
+
+        valid = np.isfinite(points[:, 0]) & np.isfinite(points[:, 1])
+        if det.keypoint_scores:
+            scores = np.asarray(det.keypoint_scores, dtype=np.float32)
+            score_valid = np.zeros(len(points), dtype=bool)
+            usable_scores = min(len(scores), len(points))
+            score_valid[:usable_scores] = scores[:usable_scores] >= min_score
+            valid &= score_valid
+        valid &= (points[:, 0] > 1.0) & (points[:, 1] > 1.0)
+
+        visible_points = points[valid]
+        if visible_points.size == 0:
+            return None
+
+        x1 = float(np.min(visible_points[:, 0]) - margin)
+        y1 = float(np.min(visible_points[:, 1]) - margin)
+        x2 = float(np.max(visible_points[:, 0]) + margin)
+        y2 = float(np.max(visible_points[:, 1]) + margin)
+
+    height, width = frame_shape[:2]
+    x1 = max(0.0, min(x1, float(width - 1)))
+    y1 = max(0.0, min(y1, float(height - 1)))
+    x2 = max(0.0, min(x2, float(width - 1)))
+    y2 = max(0.0, min(y2, float(height - 1)))
+    if x2 <= x1 + 1.0 or y2 <= y1 + 1.0:
+        return None
+    return x1, y1, x2, y2
+
+
+def _draw_readable_text(frame, text, origin, font_scale=0.65, thickness=2):
+    if not text:
+        return
+
+    height, width = frame.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    pad = 6
+    baseline_pad = 4
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+
+    x = int(origin[0])
+    y = int(origin[1])
+    x = max(0, min(x, max(0, width - text_w - 2 * pad - 1)))
+    y = max(text_h + pad + baseline_pad, min(y, max(text_h + pad + baseline_pad, height - pad)))
+
+    top_left = (x, y - text_h - pad - baseline_pad)
+    bottom_right = (x + text_w + 2 * pad, y + baseline + pad)
+    cv2.rectangle(frame, top_left, bottom_right, (0, 0, 0), -1)
+    cv2.rectangle(frame, top_left, bottom_right, (255, 220, 0), 1)
+    cv2.putText(frame, text, (x + pad, y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+
+def _draw_readable_posture_overlay(frame, detections):
+    for det, bbox_xyxy in detections:
+        if bbox_xyxy is None:
+            if det.center_xy is None:
+                continue
+            label = f"TID:{det.track_id} {det.class_name} {det.confidence:.0%}"
+            _draw_readable_text(frame, label, det.center_xy, font_scale=0.7, thickness=2)
+            continue
+
+        x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 220, 0), 2)
+
+        label = f"TID:{det.track_id} {det.class_name} {det.confidence:.0%}"
+        _draw_readable_text(frame, label, (x1, y1 - 8), font_scale=0.7, thickness=2)
+
+        if det.probabilities:
+            top_probs = sorted(det.probabilities.items(), key=lambda item: item[1], reverse=True)[:3]
+            for row, (class_name, probability) in enumerate(top_probs):
+                prob_text = f"{class_name}: {probability:.0%}"
+                _draw_readable_text(
+                    frame,
+                    prob_text,
+                    (x1, y2 + 24 + row * 26),
+                    font_scale=0.55,
+                    thickness=1,
+                )
+
 
 class PostureDetectNode(Node):
     def __init__(self):
@@ -66,9 +162,10 @@ class PostureDetectNode(Node):
         self.declare_parameter('package_name', 'Posture_and_Gesture')
         self.declare_parameter('input_topic','/camera/camera_head/color/image_raw/compressed')
         self.declare_parameter('image_transport','compressed')
-        self.declare_parameter('output_topic', '/posture_detection')
+        self.declare_parameter('output_topic', '/gesture_and_posture/detection')
         self.declare_parameter('output_image_topic', '')
         self.declare_parameter('output_detection_topic', '')
+        self.declare_parameter('output_jpeg_quality', 80)
 
         self.device = self.get_parameter('device').get_parameter_value().string_value
         self.det_frequency = self.get_parameter('det_frequency').get_parameter_value().integer_value
@@ -83,8 +180,9 @@ class PostureDetectNode(Node):
         self.output_topic = self.get_parameter('output_topic').get_parameter_value().string_value
         output_image_topic = self.get_parameter('output_image_topic').get_parameter_value().string_value
         output_detection_topic = self.get_parameter('output_detection_topic').get_parameter_value().string_value
-        self.output_image_topic = output_image_topic or f'{self.output_topic}/image'
+        self.output_image_topic = output_image_topic or f'{self.output_topic}/image/compressed'
         self.output_detection_topic = output_detection_topic or f'{self.output_topic}/detections'
+        self.output_jpeg_quality = self.get_parameter('output_jpeg_quality').get_parameter_value().integer_value
 
         self.get_logger().info(
             f"""PostureDetectNode initialized with device={self.device},
@@ -94,7 +192,7 @@ class PostureDetectNode(Node):
         )
 
         self.image_pub = self.create_publisher(
-            Image,
+            CompressedImage,
             self.output_image_topic,
             self.qos_best_effort
         )
@@ -115,7 +213,7 @@ class PostureDetectNode(Node):
         self.get_logger().info(
             f"""Subscribing to {self.input_topic} 
             with transport {self.image_transport}.
-            Publishing image to {self.output_image_topic}.
+            Publishing compressed image to {self.output_image_topic}.
             Publishing detections to {self.output_detection_topic}."""
         )
         
@@ -143,6 +241,7 @@ class PostureDetectNode(Node):
             track_ttl=self.track_ttl,
             # track_match_distance=self.track_match_distance,
             mode=self.mode,
+            class_colors=CLASS_COLORS,
             # max_persons_inference=self.max_persons_inference
         )
 
@@ -185,33 +284,26 @@ class PostureDetectNode(Node):
 
         header = msg.header
         header.frame_id = "camera_head_color_optical_frame"
-        header.stamp = self.get_clock().now().to_msg()
-
-        dbg_bgr = cv2.cvtColor(result.debug_image, cv2.COLOR_RGB2BGR)
-        image_msg = Image()
-        image_msg.header = header
-        image_msg.height = int(dbg_bgr.shape[0])
-        image_msg.width = int(dbg_bgr.shape[1])
-        image_msg.encoding = 'bgr8'
-        image_msg.is_bigendian = False
-        image_msg.step = int(dbg_bgr.shape[1] * 3)
-        image_msg.data = dbg_bgr.tobytes()
 
         detection_array = Detection2DArray()
         detection_array.header = header
+        visible_debug_detections = []
 
         for det in result.detections:
             if self.target_class and det.class_name not in self.target_class:
                 continue
 
-            if det.bbox_xyxy is None:
+            bbox_xyxy = _bbox_from_detection(det, result.debug_image.shape)
+            if bbox_xyxy is None:
                 continue
 
+            visible_debug_detections.append((det, bbox_xyxy))
+
             bb = BoundingBox2D()
-            bb.center.position.x = float((det.bbox_xyxy[0] + det.bbox_xyxy[2]) / 2.0)
-            bb.center.position.y = float((det.bbox_xyxy[1] + det.bbox_xyxy[3]) / 2.0)
-            bb.size_x = float(det.bbox_xyxy[2] - det.bbox_xyxy[0])
-            bb.size_y = float(det.bbox_xyxy[3] - det.bbox_xyxy[1])
+            bb.center.position.x = float((bbox_xyxy[0] + bbox_xyxy[2]) / 2.0)
+            bb.center.position.y = float((bbox_xyxy[1] + bbox_xyxy[3]) / 2.0)
+            bb.size_x = float(bbox_xyxy[2] - bbox_xyxy[0])
+            bb.size_y = float(bbox_xyxy[3] - bbox_xyxy[1])
 
             detection = Detection2D()
             detection.header = header
@@ -224,7 +316,18 @@ class PostureDetectNode(Node):
             detection.results.append(hypothesis)
             detection_array.detections.append(detection)
 
-        self.image_pub.publish(image_msg)
+        _draw_readable_posture_overlay(result.debug_image, visible_debug_detections)
+        dbg_bgr = cv2.cvtColor(result.debug_image, cv2.COLOR_RGB2BGR)
+        image_msg = bgr8_to_jpeg_compressed_image(
+            header,
+            dbg_bgr,
+            self.output_jpeg_quality,
+        )
+
+        if image_msg is None:
+            self.get_logger().warn("Failed to encode debug image as JPEG.")
+        else:
+            self.image_pub.publish(image_msg)
         self.detection_pub.publish(detection_array)
         
     

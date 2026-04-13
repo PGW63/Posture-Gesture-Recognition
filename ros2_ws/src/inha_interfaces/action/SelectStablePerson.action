@@ -1,0 +1,14 @@
+bool start
+float32 seconds
+string class_name
+float32 min_class_score
+float32 min_stability_score
+---
+bool success
+---
+uint32 person_count
+string[] track_ids
+float32[] class_scores
+float32[] stability_scores
+float32[] depths_m
+geometry_msgs/PointStamped[] points
