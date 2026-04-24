@@ -1,5 +1,0 @@
-bool start
-string[] target_class
----
-bool success
-string message

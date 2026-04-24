@@ -17,6 +17,7 @@
 #include "sensor_msgs/point_cloud2_iterator.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/exceptions.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #ifdef DETECTION_STABILITY_HAVE_OPENCV
 #include "opencv2/imgcodecs.hpp"
@@ -118,6 +119,7 @@ DetectionStabilityNode::DetectionStabilityNode()
   action_name_ =
     this->declare_parameter<std::string>("action_name", "select_stable_person");
   camera_frame_ = this->declare_parameter<std::string>("camera_frame", "camera_head_color_optical_frame");
+  output_frame_ = this->declare_parameter<std::string>("output_frame", "map");
 
   sync_queue_size_ = this->declare_parameter<int>("sync_queue_size", 10);
   max_lidar_age_sec_ = this->declare_parameter<double>("max_lidar_age_sec", 0.25);
@@ -294,7 +296,14 @@ void DetectionStabilityNode::execute_select_goal(
   }
 
   if (selected) {
-    result->success = publish_and_save_selection(*selected);
+    auto point = selected->point;
+    if (transform_point_to_output_frame(point)) {
+      selected->point = point;
+      result->best_point = point;
+      result->success = publish_and_save_selection(*selected);
+    } else {
+      result->success = false;
+    }
   } else {
     result->success = false;
   }
@@ -791,6 +800,12 @@ std::optional<CandidateSummary> DetectionStabilityNode::choose_best_candidate_lo
       best->selected_depth_m = median_depth;
       best_depth = median_depth;
       best_combined_score = combined_score;
+      if (best->point.point.z > 0.0) {
+        const double scale = median_depth / best->point.point.z;
+        best->point.point.x *= scale;
+        best->point.point.y *= scale;
+        best->point.point.z = median_depth;
+      }
     }
   }
 
@@ -820,6 +835,25 @@ sensor_msgs::msg::CompressedImage::ConstSharedPtr DetectionStabilityNode::find_n
     }
   }
   return best_it->msg;
+}
+
+bool DetectionStabilityNode::transform_point_to_output_frame(
+  geometry_msgs::msg::PointStamped & point) const
+{
+  if (output_frame_.empty() || point.header.frame_id == output_frame_) {
+    return true;
+  }
+  try {
+    const auto timeout = tf2::durationFromSec(transform_timeout_sec_);
+    point = tf_buffer_.transform(point, output_frame_, timeout);
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_WARN(
+      this->get_logger(),
+      "Cannot transform selected point from '%s' to '%s': %s",
+      point.header.frame_id.c_str(), output_frame_.c_str(), ex.what());
+    return false;
+  }
 }
 
 bool DetectionStabilityNode::publish_and_save_selection(const CandidateSummary & selected)
@@ -1034,16 +1068,22 @@ DepthStats DetectionStabilityNode::compute_depth_stats(
     return stats;
   }
 
+  // Focus on the upper-center body region to reduce background/outlier points.
+  const double core_min_x = bbox.cx - (bbox.w * 0.25);
+  const double core_max_x = bbox.cx + (bbox.w * 0.25);
+  const double core_min_y = bbox.min_y;
+  const double core_max_y = bbox.min_y + (bbox.h * 0.60);
+
   std::vector<double> depths;
   depths.reserve(128);
   auto begin = std::lower_bound(
-    projected_lidar.points.begin(), projected_lidar.points.end(), bbox.min_x,
+    projected_lidar.points.begin(), projected_lidar.points.end(), core_min_x,
     [](const ProjectedPoint & point, const double u) {
       return point.u < u;
     });
 
-  for (auto it = begin; it != projected_lidar.points.end() && it->u <= bbox.max_x; ++it) {
-    if (it->v >= bbox.min_y && it->v <= bbox.max_y) {
+  for (auto it = begin; it != projected_lidar.points.end() && it->u <= core_max_x; ++it) {
+    if (it->v >= core_min_y && it->v <= core_max_y) {
       depths.push_back(it->depth_m);
     }
   }
@@ -1349,3 +1389,4 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
+

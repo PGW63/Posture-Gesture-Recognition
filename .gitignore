@@ -34,12 +34,13 @@ Thumbs.db
 !assets/**
 
 # ===== ROS =====
-ros2_ws/install
-ros2_ws/build
-ros2_ws/log
+ros2_ws/install/
+ros2_ws/build/
+ros2_ws/log/
 
 # ===== Misc =====
 *.log
 
 # ===== Communication =====
-temproal_communication
+temproal_communication/
+

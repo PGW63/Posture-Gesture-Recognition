@@ -25,6 +25,7 @@
 #include "tf2/LinearMath/Matrix3x3.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "vision_msgs/msg/bounding_box2_d.hpp"
 #include "vision_msgs/msg/detection2_d.hpp"
 #include "vision_msgs/msg/detection2_d_array.hpp"
@@ -182,6 +183,8 @@ private:
     const std::string & lidar_frame,
     const rclcpp::Time & target_stamp,
     RigidTransform & transform);
+  bool transform_point_to_output_frame(
+    geometry_msgs::msg::PointStamped & point) const;
 
   void append_projected_cloud_points(
     const CloudMsg & cloud,
@@ -236,6 +239,8 @@ private:
   std::string selected_image_path_;
   std::string action_name_;
   std::string camera_frame_;
+  std::string output_frame_;
+
 
   int sync_queue_size_{10};
   double max_lidar_age_sec_{0.25};
@@ -316,3 +321,4 @@ private:
 }  // namespace detection_stability
 
 #endif  // DETECTION_STABILITY__DETECTION_STABILITY_NODE_HPP_
+
