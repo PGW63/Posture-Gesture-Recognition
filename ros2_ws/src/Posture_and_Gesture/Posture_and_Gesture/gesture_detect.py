@@ -283,10 +283,8 @@ class GestureDetectNode(Node):
             if frame is None:
                 self.get_logger().warn("Failed to decode compressed image frame.")
                 return
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
             frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
 
         # Inference Posture with MLP
@@ -331,10 +329,9 @@ class GestureDetectNode(Node):
             detection_array.detections.append(detection)
 
         _draw_readable_gesture_overlay(result.debug_image, visible_debug_detections)
-        dbg_bgr = cv2.cvtColor(result.debug_image, cv2.COLOR_RGB2BGR)
         image_msg = bgr8_to_jpeg_compressed_image(
             header,
-            dbg_bgr,
+            result.debug_image,
             self.output_jpeg_quality,
         )
 
