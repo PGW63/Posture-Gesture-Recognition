@@ -16,6 +16,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(vision_msgs REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+
 
 add_executable(detection_stability_node src/detection_stability_node.cpp)
 target_compile_features(detection_stability_node PUBLIC cxx_std_17)
@@ -33,6 +35,7 @@ ament_target_dependencies(
   sensor_msgs
   tf2
   tf2_ros
+  tf2_geometry_msgs
   vision_msgs
 )
 
