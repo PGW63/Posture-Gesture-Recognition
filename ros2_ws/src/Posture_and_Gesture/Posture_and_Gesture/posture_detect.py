@@ -170,10 +170,8 @@ class PostureDetectNode(Node):
             if frame is None:
                 self.get_logger().warn("Failed to decode compressed image frame.")
                 return
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
             frame = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
 
         # Inference Posture with MLP
@@ -187,15 +185,15 @@ class PostureDetectNode(Node):
         header.frame_id = "camera_head_color_optical_frame"
         header.stamp = self.get_clock().now().to_msg()
 
-        dbg_bgr = cv2.cvtColor(result.debug_image, cv2.COLOR_RGB2BGR)
+        dbg_rgb = cv2.cvtColor(result.debug_image, cv2.COLOR_BGR2RGB)
         image_msg = Image()
         image_msg.header = header
-        image_msg.height = int(dbg_bgr.shape[0])
-        image_msg.width = int(dbg_bgr.shape[1])
-        image_msg.encoding = 'bgr8'
+        image_msg.height = int(dbg_rgb.shape[0])
+        image_msg.width = int(dbg_rgb.shape[1])
+        image_msg.encoding = 'rgb8'
         image_msg.is_bigendian = False
-        image_msg.step = int(dbg_bgr.shape[1] * 3)
-        image_msg.data = dbg_bgr.tobytes()
+        image_msg.step = int(dbg_rgb.shape[1] * 3)
+        image_msg.data = dbg_rgb.tobytes()
 
         detection_array = Detection2DArray()
         detection_array.header = header
