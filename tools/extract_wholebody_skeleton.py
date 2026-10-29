@@ -29,9 +29,9 @@ PKL format (same as NTU):
         - "keypoint_score": np.ndarray (1, T, 65)
 
 Usage:
-    python extract_wholebody_skeleton.py
-    python extract_wholebody_skeleton.py --out wholebody_6class.pkl
-    python extract_wholebody_skeleton.py --device cpu --backend opencv
+    python tools/extract_wholebody_skeleton.py
+    python tools/extract_wholebody_skeleton.py --out wholebody_6class.pkl
+    python tools/extract_wholebody_skeleton.py --device cpu --backend opencv
 """
 
 import os
@@ -83,9 +83,9 @@ def parse_args():
         description="Extract wholebody skeletons (65 joints, no face) from custom videos"
     )
     parser.add_argument("--rtmlib_path", type=str,
-                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "rtmlib"))
+                        default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rtmlib"))
     parser.add_argument("--data_dir", type=str,
-                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "dataset"))
+                        default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "dataset"))
     parser.add_argument("--out", type=str, default="wholebody_6class.pkl")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--backend", type=str, default="onnxruntime")

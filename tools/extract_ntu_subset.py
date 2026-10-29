@@ -10,9 +10,9 @@ Classes:
     4: pointing       — NTU A031 pointing
 
 Usage:
-    python extract_ntu_subset.py
-    python extract_ntu_subset.py --src /path/to/ntu120_2d.pkl --out ntu_5class.pkl
-    python extract_ntu_subset.py --idle_per_class 200
+    python tools/extract_ntu_subset.py
+    python tools/extract_ntu_subset.py --src /path/to/ntu120_2d.pkl --out ntu_5class.pkl
+    python tools/extract_ntu_subset.py --idle_per_class 200
 """
 
 import pickle

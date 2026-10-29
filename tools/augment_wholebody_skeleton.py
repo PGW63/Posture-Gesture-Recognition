@@ -11,8 +11,8 @@ x/y scaling plus an SO(3)-style yaw rotation around the image z-axis
 keypoint leaves the image bounds.
 
 Usage:
-    python augment_wholebody_skeleton.py --in_pkl wholebody_6class.pkl --out wholebody_6class_aug.pkl
-    python augment_wholebody_skeleton.py --copies 3 --x-scales 0.9 1.0 1.1 --y-scales 0.9 1.0 1.1
+    python tools/augment_wholebody_skeleton.py --in_pkl wholebody_6class.pkl --out wholebody_6class_aug.pkl
+    python tools/augment_wholebody_skeleton.py --copies 3 --x-scales 0.9 1.0 1.1 --y-scales 0.9 1.0 1.1
 """
 
 import argparse

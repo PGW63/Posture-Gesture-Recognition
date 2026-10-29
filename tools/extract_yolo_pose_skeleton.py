@@ -9,8 +9,8 @@ This lets the same TCN training code compare RTMLib wholebody skeletons against
 YOLO pose skeletons. The number of joints V is inferred from the model output.
 
 Usage:
-    python extract_yolo_pose_skeleton.py --weights yolo26-pose.pt --out yolo26_pose_8class.pkl
-    python extract_yolo_pose_skeleton.py --weights yolo11n-pose.pt --out yolo_pose_8class.pkl
+    python tools/extract_yolo_pose_skeleton.py --weights yolo26-pose.pt --out yolo26_pose_8class.pkl
+    python tools/extract_yolo_pose_skeleton.py --weights yolo11n-pose.pt --out yolo_pose_8class.pkl
 """
 
 import argparse
@@ -26,7 +26,7 @@ from tqdm import tqdm
 from extract_wholebody_skeleton import FOLDER_TO_LABEL, LABEL_TO_NAME
 
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("YOLO_CONFIG_DIR", os.path.join(ROOT_DIR, "runtime", "ultralytics"))
 
 from ultralytics import YOLO
@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument("--weights", type=str, required=True,
                         help="Ultralytics YOLO pose weights, e.g. yolo26-pose.pt")
     parser.add_argument("--data_dir", type=str,
-                        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "dataset"))
+                        default=os.path.join(ROOT_DIR, "data", "dataset"))
     parser.add_argument("--out", type=str, default="yolo_pose_8class.pkl")
     parser.add_argument("--device", type=str, default="0",
                         help="Ultralytics device: 0, cpu, cuda:0, etc.")

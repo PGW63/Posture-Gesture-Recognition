@@ -1,9 +1,28 @@
-# Skeleton-based Action Recognition
+# Skeleton-based Posture & Gesture Recognition
 
-스켈레톤 기반 행동/자세 인식 프로젝트.  
-**Posture Recognition** (MLP) + **Gesture Recognition** (TCN) 두 개의 파이프라인으로 구성됩니다.
+**사람의 자세(서기·앉기·눕기)와 제스처(손 흔들기·손 들기·가리키기·정지)를 스켈레톤으로 인식하고, ROS 2로 로봇에 연결하는 프로젝트입니다.**
 
-rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간 추론
+![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+![ROS 2](https://img.shields.io/badge/ROS%202-22314E?logo=ros)
+
+RoboCup@Home 2026 (team Inha-United)에서 사람과의 상호작용(HRI) 모듈로 사용했습니다.
+
+| 모델 | 입력 | 출력 | 성능 |
+|---|---|---|---|
+| **Gesture TCN** | 65-joint wholebody 시퀀스 | 6 클래스 | Val Acc **96.9 %** (349 / 360) |
+| **Posture MLP** | 17-joint 단일 프레임 + bone distance | 3 클래스 | F1 0.78–0.93 |
+
+```mermaid
+flowchart LR
+    A[카메라] --> B[rtmlib Wholebody<br/>133 keypoints]
+    B --> C[face 제거<br/>65 joints]
+    C --> D[어깨 기준 정규화]
+    D --> E[TCN · Gesture]
+    D --> F[MLP · Posture]
+    E --> G[ROS 2 service / topic]
+    F --> G
+```
 
 <table>
   <tr>
@@ -48,39 +67,42 @@ rtmlib Wholebody(133 keypoints) → 스켈레톤 추출 → 학습 → 실시간
 
 ## 프로젝트 구조
 
-```
-├── data/
-│   ├── dataset.py              # MLP 데이터셋 (단일 프레임, Posture)
-│   ├── ntu_dataset.py          # TCN 데이터셋 (시퀀스, Gesture)
-│   ├── collect_skeleton.py     # 이미지 → 스켈레톤 추출
-│   ├── Annotations/            # POLAR JSON 어노테이션
-│   ├── ImageSets/              # train/val split 파일
-│   ├── images/                 # 원본 이미지 (gitignore)
-│   ├── skeletons/              # 추출된 .npy (gitignore)
-│   └── dataset/                # 커스텀 비디오 클립 (gitignore)
-├── models/
-│   ├── mlp.py                  # MLP 모델 (Posture)
-│   ├── tcn.py                  # TCN 모델 (Gesture, Dilated Causal Conv)
-│   ├── best_model.pth          # 학습된 MLP (gitignore)
-│   ├── best_tcn_xsub.pth       # 학습된 TCN (gitignore)
-│   └── best_tcn_xset.pth       # 학습된 TCN (gitignore)
-├── src/
-│   ├── train.py                # MLP 학습
-│   ├── train_tcn.py            # TCN 학습
-│   ├── val.py                  # MLP 평가
-│   ├── val_tcn.py              # TCN 평가
-│   ├── inference.py            # MLP 추론 (.npy / 웹캠)
-│   ├── inference_tcn.py        # TCN 실시간 추론 (웹캠)
-│   └── collect_data.py         # 웹캠 데이터 수집 도구
-├── utils/
-│   ├── skeleton_ops.py         # 스켈레톤 joint 연산 (17/65-joint)
-│   ├── normalize_skeleton.py   # 어깨 기반 정규화
-│   └── compute_pairwise_distance.py  # Bone distance 피처
-├── extract_wholebody_skeleton.py   # 비디오 → 65-joint pkl 추출
-├── extract_ntu_subset.py           # NTU120에서 subset 추출
-├── merge_pkl.py                    # NTU + 커스텀 pkl 병합
-├── requirements.txt
-└── README.md
+```text
+├── models/                     # 모델 정의
+│   ├── mlp.py                  #   MLP (Posture)
+│   └── tcn.py                  #   TCN (Gesture, dilated causal conv)
+├── data/                       # 데이터셋 클래스와 split
+│   ├── dataset.py              #   MLP 데이터셋 (단일 프레임)
+│   ├── ntu_dataset.py          #   TCN 데이터셋 (시퀀스)
+│   ├── collect_skeleton.py     #   이미지 → 스켈레톤 추출
+│   ├── ImageSets/              #   train/val split 파일
+│   └── dataset/ images/ ...    #   원본·추출 데이터 (gitignore)
+├── src/                        # 학습 · 평가 · 추론 진입점
+│   ├── train.py / val.py       #   MLP
+│   ├── train_tcn.py / val_tcn.py   # TCN
+│   ├── finetune_pointing.py    #   pointing 클래스 파인튜닝
+│   ├── inference.py            #   MLP 추론 (.npy / 웹캠)
+│   ├── inference_tcn.py        #   TCN 실시간 추론
+│   └── collect_data.py         #   웹캠 데이터 수집
+├── runtime/                    # 추론 공통 모듈 (src/ 와 ROS 노드가 함께 사용)
+│   ├── frame_inferencer.py     #   MLP/TCN 프레임 단위 추론기
+│   ├── mlp_runtime.py · tcn_runtime.py
+│   ├── realtime_inference_common.py
+│   └── realtime_viz.py         #   HUD · 확률 막대 · 트랙 라벨
+├── utils/                      # 스켈레톤 연산 · 정규화 · bone distance · 트래킹
+├── tools/                      # 데이터 준비 스크립트 (프로젝트 루트에서 실행)
+│   ├── extract_wholebody_skeleton.py   # 비디오 → 65-joint pkl
+│   ├── extract_yolo_pose_skeleton.py   # YOLO-Pose 기반 추출 (비교용)
+│   ├── augment_wholebody_skeleton.py   # 스케일 증강
+│   ├── convert_8to6class.py            # 8 → 6 클래스 변환
+│   ├── extract_ntu_subset.py           # NTU-120 subset 추출
+│   └── merge_pkl.py                    # NTU + 커스텀 병합
+├── ros2_ws/src/                # ROS 2 패키지
+│   ├── Posture_and_Gesture/    #   gesture_detect_node · posture_detect_node
+│   └── detection_stability/    #   LiDAR·TF 기반 안정 인물 선택 (C++)
+├── rtmlib/                     # vendored rtmlib (pose tracker)
+├── assets/                     # README 이미지
+└── requirements.txt
 ```
 
 ---
@@ -149,7 +171,7 @@ data/dataset/
 └── stop/            ← label 5
 ```
 
-폴더명 ↔ 라벨 매핑은 [extract_wholebody_skeleton.py#L46-L54](extract_wholebody_skeleton.py#L46-L54) (`FOLDER_TO_LABEL`)에서 정의. 새 클래스를 추가하려면 여기에 항목을 더하고 [data/ntu_dataset.py#L36-L44](data/ntu_dataset.py#L36-L44)의 `NTU_ACTION_NAMES`에도 같은 라벨을 추가.
+폴더명 ↔ 라벨 매핑은 [tools/extract_wholebody_skeleton.py](tools/extract_wholebody_skeleton.py) (`FOLDER_TO_LABEL`)에서 정의. 새 클래스를 추가하려면 여기에 항목을 더하고 [data/ntu_dataset.py#L36-L44](data/ntu_dataset.py#L36-L44)의 `NTU_ACTION_NAMES`에도 같은 라벨을 추가.
 
 #### 1-b. 클립 녹화 방법
 
@@ -164,7 +186,7 @@ data/dataset/
 #### 1-c. 스켈레톤 추출
 
 ```bash
-python extract_wholebody_skeleton.py --out wholebody_6class.pkl --person_select largest
+python tools/extract_wholebody_skeleton.py --out wholebody_6class.pkl --person_select largest
 ```
 
 - 각 비디오를 프레임 단위로 디코딩 → rtmlib `PoseTracker(Wholebody)`로 133-keypoint 추출 → face 68개 제거 → **(1, T, 65, 2)** + score 텐서로 묶음.
@@ -188,8 +210,8 @@ RTX 4060 Ti 기준 약 2초/클립, 1800클립이면 약 1시간.
 NTU-120 RGB+D의 일부 행동을 추가로 섞고 싶을 때:
 
 ```bash
-python extract_ntu_subset.py --src /path/to/ntu120_2d.pkl --out ntu_5class.pkl
-python merge_pkl.py --ntu ntu_5class.pkl --custom wholebody_6class.pkl --out merged.pkl
+python tools/extract_ntu_subset.py --src /path/to/ntu120_2d.pkl --out ntu_5class.pkl
+python tools/merge_pkl.py --ntu ntu_5class.pkl --custom wholebody_6class.pkl --out merged.pkl
 ```
 
 > 주의: NTU subset은 17-joint(body only)라서 65-joint 커스텀 데이터와 channel 수가 안 맞음. 둘 다 쓰려면 두 데이터 모두 같은 joint 차원으로 맞추는 전처리가 필요.
@@ -262,6 +284,23 @@ python src/inference.py --webcam --source video.mp4
 python src/inference.py skeleton.npy    # .npy 파일 추론
 ```
 
+## ROS 2 연동
+
+```bash
+cd ros2_ws
+colcon build --symlink-install
+source install/setup.bash
+ros2 run Posture_and_Gesture gesture_detect_node
+```
+
+| 노드 | 역할 | 주요 인터페이스 |
+|---|---|---|
+| `gesture_detect_node` | 카메라 이미지에서 사람별 트랙을 유지하며 TCN으로 제스처 분류 | 입력 `/camera/camera_head/color/image_raw/compressed`, 출력 `/gesture_and_posture/detection`, 서비스 `GestureDetection` |
+| `posture_detect_node` | MLP로 자세 분류 | 같은 카메라 입력 |
+| `detection_stability` | 2D 검출을 LiDAR·TF와 결합해 안정적인 사람 한 명을 `map` 좌표로 선택 | 액션 `select_stable_person`, 출력 `/gesture_and_posture/selected_person/point` |
+
+`inha_interfaces`(팀 메시지 패키지)가 같은 워크스페이스에 있어야 빌드됩니다. 노드는 `runtime/`, `models/`를 그대로 import하므로 학습 코드와 추론 코드가 한 벌로 유지됩니다.
+
 ## 제공해주는 데이터셋 및 모델
 
 ### DataSet
@@ -318,5 +357,8 @@ Best epoch 61 / 76, Val Acc **0.9694** (349 / 360)
 
 
 
-## TODO
 위의 추론 영상과 같이 가까운 시점과 7~8m 넘어가는 지점부터의 데이터셋이 없기에 새로 따서 새로이 학습할 예정
+
+## 작성자
+
+박건우 ([@PGW63](https://github.com/PGW63)) — 인하대학교 스마트모빌리티공학과

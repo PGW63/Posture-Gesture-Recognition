@@ -16,9 +16,9 @@ left/right를 하나의 클래스로 합칩니다:
   7 stop          → 5 stop
 
 Usage:
-    python convert_8to6class.py
-    python convert_8to6class.py --input wholebody_8class.pkl --output wholebody_6class_new.pkl
-    python convert_8to6class.py --all
+    python tools/convert_8to6class.py
+    python tools/convert_8to6class.py --input wholebody_8class.pkl --output wholebody_6class_new.pkl
+    python tools/convert_8to6class.py --all
 """
 
 import pickle

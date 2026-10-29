@@ -9,8 +9,8 @@ Classes:
     4: pointing         — NTU A031
 
 Usage:
-    python merge_pkl.py
-    python merge_pkl.py --ntu ntu_5class.pkl --custom custom_handup.pkl --out merged_5class.pkl
+    python tools/merge_pkl.py
+    python tools/merge_pkl.py --ntu ntu_5class.pkl --custom custom_handup.pkl --out merged_5class.pkl
 """
 
 import pickle
